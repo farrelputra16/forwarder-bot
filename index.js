@@ -2,6 +2,15 @@ import { bot } from './bot.js';
 import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses } from './scraper.js';
 import { config } from './config.js';
 import fs from 'fs';
+import http from 'http';
+
+// Create a dummy HTTP server to satisfy Render's port binding requirement
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running');
+}).listen(process.env.PORT || 3000, () => {
+  console.log(`HTTP server listening on port ${process.env.PORT || 3000}`);
+});
 
 // Initialize
 await initScraper(config.telegram.session);
