@@ -1,10 +1,10 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses } from './scraper.js';
+import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, fetchTokenHolders, formatTokenSummary, formatWalletLines } from './scraper.js';
 import { config } from './config.js';
 import fs from 'fs';
 import http from 'http';
 
-// Create a dummy HTTP server to satisfy Render's port binding requirement
+
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is running');
@@ -12,41 +12,96 @@ http.createServer((req, res) => {
   console.log(`HTTP server listening on port ${process.env.PORT || 3000}`);
 });
 
-// Initialize
 await initScraper(config.telegram.session);
 
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
 
-// Forwarding Logic
 onMessage(async (sourceChannel, message) => {
   if (!message.text) return;
   
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
-  if (!channelInfo || !channelInfo.active) return; // Added check
+  if (!channelInfo || !channelInfo.active) return;
   
-  // Use specific target if set, else fallback to config default
   const target = channelInfo.target || config.targetChannel;
 
   if (channelInfo.mode === 'forward') {
-      await forwardMessage(target, `${message.text}`);
+    await forwardMessage(target, message.text);
   } else if (channelInfo.mode === 'extract') {
-      const cas = extractAddresses(message.text);
-      if (cas.length > 0) {
-          for(const ca of cas) {
-            await forwardMessage(target, `${ca}`);
-          }
-      }
+    const solCAs = extractAddresses(message.text);
+    const evmCAs = extractEVMAddresses(message.text);
+    const dexResults = await extractCAFromDexScreener(message.text);
+
+    const seen = new Set();
+    const allItems = [];
+
+    for (const ca of solCAs) { seen.add(ca); allItems.push({ ca, chain: 'sol' }); }
+    for (const ca of evmCAs) { seen.add(ca); allItems.push({ ca, chain: null }); }
+    for (const { ca, chain } of dexResults) {
+      if (seen.has(ca)) continue;
+      seen.add(ca);
+      allItems.push({ ca, chain });
+    }
+
+    for (const ca of evmCAs) {
+      const chain = await resolveChain(ca);
+      const item = allItems.find(i => i.ca === ca);
+      if (item && chain) item.chain = chain;
+    }
+
+    const unique = [];
+    const dedup = new Set();
+    for (const item of allItems) {
+      if (!dedup.has(item.ca)) { dedup.add(item.ca); unique.push(item); }
+    }
+
+    if (unique.length === 0) return;
+
+    for (const { ca } of unique) {
+      await forwardMessage(target, ca);
+    }
+
+    const infoResults = await Promise.all(
+      unique.map(async ({ ca, chain }) => {
+        if (!chain) return { ca, chain: null, info: null };
+        const info = await fetchTokenInfo(ca, chain);
+        return { ca, chain, info };
+      })
+    );
+
+    for (const { ca, chain, info } of infoResults) {
+      if (!info || !chain) continue;
+
+      const summary = formatTokenSummary(info);
+      if (!summary) continue;
+
+      const [smWallets, kolWallets] = await Promise.all([
+        fetchTokenHolders(ca, chain, 'smart_degen', 5),
+        fetchTokenHolders(ca, chain, 'renowned', 5),
+      ]);
+
+      const smCount = info.wallet_tags_stat?.smart_wallets ?? smWallets.length;
+      const kolCount = info.wallet_tags_stat?.renowned_wallets ?? kolWallets.length;
+
+      const walletLines = [
+        ...formatWalletLines(smWallets, chain, 'smart_degen'),
+        ...formatWalletLines(kolWallets, chain, 'renowned'),
+      ];
+
+      const fullText = summary +
+        `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}` +
+        (walletLines.length ? '\n\n' + walletLines.join('\n') : '');
+
+      await forwardMessage(target, fullText);
+    }
   }
 });
 
-// Start listeners from saved file
 const channels = loadChannels();
 for (const ch of Object.keys(channels)) {
-    await addChannelListener(ch).catch(console.error);
+  await addChannelListener(ch).catch(console.error);
 }
 
-// Start Bot
 bot.launch();
 console.log('Bot running...');
