@@ -98,10 +98,19 @@ onMessage(async (sourceChannel, message) => {
   }
 });
 
+process.on('unhandledRejection', (err) => {
+  console.log('[unhandledRejection]', err.message || err);
+});
+process.on('uncaughtException', (err) => {
+  console.log('[uncaughtException]', err.message || err);
+});
+
 const channels = loadChannels();
 for (const ch of Object.keys(channels)) {
   await addChannelListener(ch).catch(console.error);
 }
 
-bot.launch();
+bot.launch().catch((err) => {
+  console.log('[Bot API]', err.message, '— commands disabled, MTProto still active');
+});
 console.log('Bot running...');
