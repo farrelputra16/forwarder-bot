@@ -104,7 +104,7 @@ export async function extractCAFromDexScreener(text) {
 
 // ── Fetch: GMGN ─────────────────────────────────────────────────
 
-export async function fetchTokenInfo(ca, chain, dexInfo) {
+export async function fetchTokenInfo(ca, chain) {
   const { exec } = await import('child_process');
   const { promisify } = await import('util');
   const execAsync = promisify(exec);
@@ -119,7 +119,7 @@ export async function fetchTokenInfo(ca, chain, dexInfo) {
 
   const isEmpty = !data || !data.price || data.price.price === '0';
   if (isEmpty) {
-    const dex = dexInfo || await fetchDexScreenerInfo(ca);
+    const dex = await fetchDexScreenerInfo(ca);
     if (dex) {
       data = { ...(data || {}), _dex: dex, _fallback: true };
     }

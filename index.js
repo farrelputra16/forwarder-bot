@@ -68,31 +68,22 @@ onMessage(async (sourceChannel, message) => {
 
     if (allItems.length === 0) return;
 
-    // Phase 1: Called at MC dari DexScreener (cepat)
-    const dexResults2 = await Promise.all(
-      allItems.map(async ({ ca, chain }) => {
-        if (!chain) return { ca, dexInfo: null };
-        const dexInfo = await fetchDexScreenerInfo(ca);
-        if (dexInfo?.marketCap) {
-          const label = fmtMC(dexInfo.marketCap);
-          if (label) await forwardMessage(target, `⚡ Called at ${label}`);
-        }
-        return { ca, dexInfo };
-      })
-    );
-
-    const dexMap = new Map(dexResults2.map(r => [r.ca, r.dexInfo]));
-
-    // Phase 2: Detail dari GMGN (lengkap, lebih lambat)
     const infoResults = await Promise.all(
       allItems.map(async ({ ca, chain }) => {
-        if (!chain) return { ca, info: null };
-        const info = await fetchTokenInfo(ca, chain, dexMap.get(ca));
-        return { ca, info };
+        if (!chain) return { ca, mcLabel: null, info: null };
+
+        const [dexInfo, info] = await Promise.all([
+          fetchDexScreenerInfo(ca),
+          fetchTokenInfo(ca, chain),
+        ]);
+
+        const mcLabel = dexInfo?.marketCap ? fmtMC(dexInfo.marketCap) : null;
+
+        return { ca, mcLabel, info };
       })
     );
 
-    for (const { ca, info } of infoResults) {
+    for (const { ca, mcLabel, info } of infoResults) {
       if (!info) continue;
 
       const smCount = info.wallet_tags_stat?.smart_wallets ?? 0;
@@ -101,7 +92,9 @@ onMessage(async (sourceChannel, message) => {
       const summary = formatTokenSummary(info);
       if (!summary) continue;
 
-      const msg = summary + `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
+      let msg = mcLabel ? `⚡ Called at ${mcLabel}\n\n` : '';
+      msg += summary;
+      msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
       await forwardMessage(target, msg, 'html');
     }
   }
