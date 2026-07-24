@@ -60,6 +60,10 @@ onMessage(async (sourceChannel, message) => {
 
     if (unique.length === 0) return;
 
+    for (const { ca } of unique) {
+      await forwardMessage(target, ca);
+    }
+
     const infoResults = await Promise.all(
       unique.map(async ({ ca, chain }) => {
         if (!chain) return { ca, chain: null, info: null };
@@ -94,11 +98,13 @@ onMessage(async (sourceChannel, message) => {
       const kolCount = info.wallet_tags_stat?.renowned_wallets ?? kolWallets.length;
 
       const summary = formatTokenSummary(info);
+      if (!summary) continue;
 
-      let msg = `<code>${ca}</code>`;
-      if (mcLabel) msg += `\n⚡ Called at ${mcLabel}`;
-      msg += `  |  ⏱ ${elapsed}ms`;
-      if (summary) msg += '\n\n' + summary;
+      let parts = [];
+      if (mcLabel) parts.push(`⚡ Called at ${mcLabel}`);
+      parts.push(`⏱ ${elapsed}ms`);
+      let msg = parts.join('  |  ');
+      msg += '\n\n' + summary;
       msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
 
       const walletLines = [
