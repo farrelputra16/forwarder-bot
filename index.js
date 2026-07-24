@@ -32,10 +32,10 @@ onMessage(async (sourceChannel, message) => {
     const solCAs = extractAddresses(message.text);
     const evmCAs = extractEVMAddresses(message.text);
 
-    for (const ca of solCAs) await forwardMessage(target, ca);
-    for (const ca of evmCAs) await forwardMessage(target, ca);
-
-    const dexResults = await extractCAFromDexScreener(message.text);
+    await Promise.all([
+      ...solCAs.map(ca => forwardMessage(target, ca)),
+      ...evmCAs.map(ca => forwardMessage(target, ca)),
+    ]);
 
     const seen = new Set();
     const allItems = [];
@@ -43,17 +43,20 @@ onMessage(async (sourceChannel, message) => {
     for (const ca of solCAs) { seen.add(ca); allItems.push({ ca, chain: 'sol' }); }
     for (const ca of evmCAs) { seen.add(ca); allItems.push({ ca, chain: null }); }
 
-    for (const ca of evmCAs) {
-      const chain = await resolveChain(ca);
-      const item = allItems.find(i => i.ca === ca);
-      if (item && chain) item.chain = chain;
+    const [dexResults, chainResults] = await Promise.all([
+      extractCAFromDexScreener(message.text),
+      Promise.all(evmCAs.map(ca => resolveChain(ca))),
+    ]);
+
+    for (let i = 0; i < evmCAs.length; i++) {
+      const item = allItems.find(it => it.ca === evmCAs[i]);
+      if (item && chainResults[i]) item.chain = chainResults[i];
     }
 
-    for (const { ca, chain } of dexResults) {
-      if (seen.has(ca)) continue;
-      seen.add(ca);
-      await forwardMessage(target, ca);
-      allItems.push({ ca, chain });
+    const newDex = dexResults.filter(({ ca }) => !seen.has(ca));
+    if (newDex.length) {
+      await Promise.all(newDex.map(({ ca }) => forwardMessage(target, ca)));
+      for (const { ca, chain } of newDex) { seen.add(ca); allItems.push({ ca, chain }); }
     }
 
     if (allItems.length === 0) return;
