@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, fetchTokenHolders, formatTokenSummary, formatWalletLines } from './scraper.js';
+import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, formatTokenSummary } from './scraper.js';
 import { config } from './config.js';
 import fs from 'fs';
 import http from 'http';
@@ -84,13 +84,8 @@ onMessage(async (sourceChannel, message) => {
            '$' + Number(mc).toFixed(2))
         : null;
 
-      const [smWallets, kolWallets] = await Promise.all([
-        fetchTokenHolders(ca, chain, 'smart_degen', 5),
-        fetchTokenHolders(ca, chain, 'renowned', 5),
-      ]);
-
-      const smCount = info.wallet_tags_stat?.smart_wallets ?? smWallets.length;
-      const kolCount = info.wallet_tags_stat?.renowned_wallets ?? kolWallets.length;
+      const smCount = info.wallet_tags_stat?.smart_wallets ?? 0;
+      const kolCount = info.wallet_tags_stat?.renowned_wallets ?? 0;
 
       const summary = formatTokenSummary(info);
       if (!summary) continue;
@@ -98,12 +93,6 @@ onMessage(async (sourceChannel, message) => {
       let msg = mcLabel ? `⚡ Called at ${mcLabel}\n\n` : '';
       msg += summary;
       msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
-
-      const walletLines = [
-        ...formatWalletLines(smWallets, chain, 'smart_degen'),
-        ...formatWalletLines(kolWallets, chain, 'renowned'),
-      ];
-      if (walletLines.length) msg += '\n\n' + walletLines.join('\n');
 
       await forwardMessage(target, msg, 'html');
     }
