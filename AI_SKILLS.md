@@ -87,8 +87,8 @@ After forwarding each CA, bot calls `gmgn-cli token info --chain <chain> --addre
 ### APIs used
 | API | Endpoint | Purpose |
 |-----|----------|---------|
-| DexScreener | `GET /latest/dex/search?q=<pairOrCA>` | Resolve pair → CA, or CA → chain |
-| GMGN CLI | `gmgn-cli token info --chain <chain> --address <ca> --raw` | Token info |
+| DexScreener | `GET /latest/dex/search?q=<pairOrCA>` | Called at MC (fastest), pair→CA resolve, chain detect |
+| GMGN CLI | `gmgn-cli token info --chain <chain> --address <ca> --raw` | Token info (slower, detailed) |
 
 ### Telegram Commands (BotFather)
 ```
@@ -101,36 +101,25 @@ refresh - Refresh token info: /refresh <CA> [chain]
 ```
 
 ### Output Format (extract mode)
-1. **CA** (fast, via MTProto)
-2. **Token Summary + SM/KOL counts + inline buttons** (via Bot API)
-   - 🧠 SM 5 button → tap to see Smart Money wallets
-   - 🏆 KOL 2 button → tap to see KOL wallets
+1. **CA** — forwarded instantly via MTProto (regex lokal, 0 API call)
+2. **Called at + Token Summary + SM/KOL count** — sent via MTProto as one HTML message
 
-### Summary with Buttons
+### Message Format
 ```
+⚡ Called at $14.1K
+
 🪙 $HOODBIRD — Hoodbird
 ⛓️ ROBINHOOD · uniswap
 💵 $0.000014  📉 -19.4%
 💰 MC $14.1K  │  💧 Liq $8.2K
 👥 1,234  │  🧠 SM 0  │  🏆 KOL 0
 📊 1h Vol $1.1K  │  24h Vol $10.4K
-🐦 X  │  💬 TG
 
 🧠 SM 5  🏆 KOL 2
-[ 🧠 Show Smart Money (5) ]
-[ 🏆 Show KOL (2) ]
 ```
 
-### Wallet Preview (via button tap)
-```
-🧠 Smart Money Top 5:
-🥇 ABC...xyz — +$12.5K · 5.2%
-   https://gmgn.ai/sol/address/...
-🥈 DEF...uvw — +$8.1K · 3.1%
-   https://gmgn.ai/sol/address/...
-🏆 KOL Top 5:
-🥇 GHI...rst — +$2.3K · 1.2%
-   https://gmgn.ai/sol/address/...
-```
-
-### Telegram Commands (BotFather)
+### Flow
+1. Extract sol/evm CAs via local regex → forward parallel (instant)
+2. DexScreener API + GMGN CLI fetched in parallel per CA
+3. MC from DexScreener (fastest) used for "Called at" value
+4. One combined message sent after both resolve
