@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, formatTokenSummary } from './scraper.js';
+import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, fetchDexScreenerInfo, formatTokenSummary } from './scraper.js';
 import { config } from './config.js';
 import fs from 'fs';
 import http from 'http';
@@ -16,6 +16,13 @@ await initScraper(config.telegram.session);
 
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
+
+function fmtMC(n) {
+  if (!n || isNaN(n)) return null;
+  return n >= 1_000_000 ? '$' + (n / 1_000_000).toFixed(1) + 'M' :
+         n >= 1_000 ? '$' + (n / 1_000).toFixed(1) + 'K' :
+         '$' + Number(n).toFixed(2);
+}
 
 onMessage(async (sourceChannel, message) => {
   if (!message.text) return;
@@ -61,28 +68,32 @@ onMessage(async (sourceChannel, message) => {
 
     if (allItems.length === 0) return;
 
-    const infoResults = await Promise.all(
+    // Phase 1: Called at MC dari DexScreener (cepat)
+    const dexResults2 = await Promise.all(
       allItems.map(async ({ ca, chain }) => {
-        if (!chain) return { ca, chain: null, info: null };
-        const info = await fetchTokenInfo(ca, chain);
-        return { ca, chain, info };
+        if (!chain) return { ca, dexInfo: null };
+        const dexInfo = await fetchDexScreenerInfo(ca);
+        if (dexInfo?.marketCap) {
+          const label = fmtMC(dexInfo.marketCap);
+          if (label) await forwardMessage(target, `⚡ Called at ${label}`);
+        }
+        return { ca, dexInfo };
       })
     );
 
-    for (const { ca, chain, info } of infoResults) {
-      if (!info || !chain) continue;
+    const dexMap = new Map(dexResults2.map(r => [r.ca, r.dexInfo]));
 
-      const mc = info._dex
-        ? info._dex.marketCap
-        : (info.circulating_supply && info.price?.price
-            ? parseFloat(info.price.price) * parseFloat(info.circulating_supply)
-            : 0);
+    // Phase 2: Detail dari GMGN (lengkap, lebih lambat)
+    const infoResults = await Promise.all(
+      allItems.map(async ({ ca, chain }) => {
+        if (!chain) return { ca, info: null };
+        const info = await fetchTokenInfo(ca, chain, dexMap.get(ca));
+        return { ca, info };
+      })
+    );
 
-      const mcLabel = mc > 0
-        ? (mc >= 1_000_000 ? '$' + (mc / 1_000_000).toFixed(1) + 'M' :
-           mc >= 1_000 ? '$' + (mc / 1_000).toFixed(1) + 'K' :
-           '$' + Number(mc).toFixed(2))
-        : null;
+    for (const { ca, info } of infoResults) {
+      if (!info) continue;
 
       const smCount = info.wallet_tags_stat?.smart_wallets ?? 0;
       const kolCount = info.wallet_tags_stat?.renowned_wallets ?? 0;
@@ -90,10 +101,7 @@ onMessage(async (sourceChannel, message) => {
       const summary = formatTokenSummary(info);
       if (!summary) continue;
 
-      let msg = mcLabel ? `⚡ Called at ${mcLabel}\n\n` : '';
-      msg += summary;
-      msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
-
+      const msg = summary + `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
       await forwardMessage(target, msg, 'html');
     }
   }
