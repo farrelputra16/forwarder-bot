@@ -73,6 +73,19 @@ onMessage(async (sourceChannel, message) => {
     for (const { ca, chain, info } of infoResults) {
       if (!info || !chain) continue;
 
+      const mc = info._dex
+        ? info._dex.marketCap
+        : (info.circulating_supply && info.price?.price
+            ? parseFloat(info.price.price) * parseFloat(info.circulating_supply)
+            : 0);
+
+      if (mc > 0) {
+        const label = mc >= 1_000_000 ? '$' + (mc / 1_000_000).toFixed(1) + 'M' :
+                      mc >= 1_000 ? '$' + (mc / 1_000).toFixed(1) + 'K' :
+                      '$' + Number(mc).toFixed(2);
+        await forwardMessage(target, `⚡ Called at ${label}`);
+      }
+
       const summary = formatTokenSummary(info);
       if (!summary) continue;
 
