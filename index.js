@@ -1,6 +1,7 @@
 import { bot } from './bot.js';
 import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, fetchDexScreenerInfo, formatTokenSummary } from './scraper.js';
 import { config } from './config.js';
+import { addTracking, initTrackings } from './tracking.js';
 import fs from 'fs';
 import http from 'http';
 
@@ -70,7 +71,7 @@ onMessage(async (sourceChannel, message) => {
 
     const infoResults = await Promise.all(
       allItems.map(async ({ ca, chain }) => {
-        if (!chain) return { ca, mcLabel: null, info: null };
+        if (!chain) return { ca, mcLabel: null, info: null, dexPrice: null };
 
         const [dexInfo, info] = await Promise.all([
           fetchDexScreenerInfo(ca),
@@ -78,12 +79,13 @@ onMessage(async (sourceChannel, message) => {
         ]);
 
         const mcLabel = dexInfo?.marketCap ? fmtMC(dexInfo.marketCap) : null;
+        const dexPrice = dexInfo?.price ? parseFloat(dexInfo.price) : null;
 
-        return { ca, mcLabel, info };
+        return { ca, mcLabel, info, dexPrice };
       })
     );
 
-    for (const { ca, mcLabel, info } of infoResults) {
+    for (const { ca, mcLabel, info, dexPrice } of infoResults) {
       if (!info) continue;
 
       const smCount = info.wallet_tags_stat?.smart_wallets ?? 0;
@@ -96,6 +98,18 @@ onMessage(async (sourceChannel, message) => {
       msg += summary;
       msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
       await forwardMessage(target, msg, 'html');
+
+      if (channelInfo.tracking?.enabled && dexPrice > 0) {
+        addTracking({
+          ca, chain,
+          calledAtPrice: dexPrice,
+          calledAtMC: mcLabel || '',
+          symbol: info.symbol || '',
+          target,
+          multipliers: channelInfo.tracking.multipliers,
+          alertInterval: channelInfo.tracking.interval,
+        });
+      }
     }
   }
 });
@@ -111,6 +125,8 @@ const channels = loadChannels();
 for (const ch of Object.keys(channels)) {
   await addChannelListener(ch).catch(console.error);
 }
+
+initTrackings();
 
 bot.launch().catch((err) => {
   console.log('[Bot API]', err.message, '— commands disabled, MTProto still active');

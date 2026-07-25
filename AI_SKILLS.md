@@ -98,7 +98,16 @@ list_channels - Manage monitored channels (pause/delete)
 set_mode - Set processing mode: /set_mode <channel> <extract|forward>
 set_target - Set a specific target: /set_target <channel> <target_channel>
 refresh - Refresh token info: /refresh <CA> [chain]
+track - Enable/disable price tracking: /track <channel> <on|off>
+track_set - Configure tracking: /track_set <channel> <multipliers> <interval_sec>
 ```
+
+### Price Tracking
+When enabled on a channel, every CA detected gets tracked:
+- **Multiplier alerts**: notifies when price hits 2X, 3X, 5X, 10X from called at price
+- **Periodic updates**: sends price every N seconds (default 3600s / 1h)
+- Uses DexScreener API to check current price every 60 seconds
+- Storage: `tracking.json` (persists across restarts)
 
 ### Output Format (extract mode)
 1. **CA** — forwarded instantly via MTProto (regex lokal, 0 API call)

@@ -107,18 +107,12 @@ bot.on('text', async (ctx) => {
       [Markup.button.callback('Extract CA', 'mode_extract'), Markup.button.callback('Forward All', 'mode_forward')]
     ]));
   } else if (state.step === 'TARGET') {
-    const channels = loadChannels();
-    const link = state.link;
-    
-    channels[link] = { mode: state.mode, target: ctx.message.text, active: true };
-    saveChannels(channels);
-    try {
-      await addChannelListener(link);
-      ctx.reply(`Success! Monitoring ${link}\nMode: ${state.mode}\nTarget: ${ctx.message.text}`);
-    } catch (err) {
-      ctx.reply(`Error starting listener: ${err.message}`);
-    }
-    userState.delete(ctx.from.id);
+    state.target = ctx.message.text;
+    state.step = 'TRACKING';
+    ctx.reply('Enable price tracking?', Markup.inlineKeyboard([
+      [Markup.button.callback('Yes (2X/3X/5X/10X, every 1h)', 'track_yes')],
+      [Markup.button.callback('No', 'track_no')],
+    ]));
   }
 });
 
@@ -129,6 +123,42 @@ bot.action(/mode_(.+)/, (ctx) => {
   state.step = 'TARGET';
   ctx.editMessageText('Enter the target channel username (e.g., @target):');
 });
+
+bot.action('track_yes', (ctx) => {
+  const state = userState.get(ctx.from.id);
+  if (!state) return;
+  state.tracking = true;
+  state.step = 'TRACKING_FINAL';
+  ctx.editMessageText('Saving with tracking enabled...');
+  processTrackingFinal(ctx, state);
+});
+
+bot.action('track_no', (ctx) => {
+  const state = userState.get(ctx.from.id);
+  if (!state) return;
+  state.tracking = false;
+  state.step = 'TRACKING_FINAL';
+  ctx.editMessageText('Saving without tracking...');
+  processTrackingFinal(ctx, state);
+});
+
+async function processTrackingFinal(ctx, state) {
+  const channels = loadChannels();
+  const link = state.link;
+  const entry = { mode: state.mode, target: state.target, active: true };
+  if (state.tracking) {
+    entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+  }
+  channels[link] = entry;
+  saveChannels(channels);
+  try {
+    await addChannelListener(link);
+    ctx.reply(`Success! Monitoring ${link}\nMode: ${state.mode}\nTarget: ${state.target}${state.tracking ? '\nTracking: ON' : ''}`);
+  } catch (err) {
+    ctx.reply(`Error starting listener: ${err.message}`);
+  }
+  userState.delete(ctx.from.id);
+}
 
 bot.action('list_channels', (ctx) => {
   const channels = loadChannels();
@@ -142,7 +172,8 @@ bot.action('list_channels', (ctx) => {
 bot.action(/manage_(.+)/, (ctx) => {
   const channel = ctx.match[1];
   const info = loadChannels()[channel];
-  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}`, Markup.inlineKeyboard([
+  const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval}s)` : 'Tracking: OFF';
+  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}`, Markup.inlineKeyboard([
     [Markup.button.callback(info.active ? 'Pause' : 'Start', `toggle_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
     [Markup.button.callback('Back', 'list_channels')]
   ]));
@@ -167,6 +198,50 @@ bot.action(/delete_(.+)/, (ctx) => {
   saveChannels(channels);
   ctx.answerCbQuery('Deleted');
   ctx.editMessageText('Channel deleted.', Markup.inlineKeyboard([[Markup.button.callback('Back', 'list_channels')]]));
+});
+
+// ── Price Tracking ──────────────────────────────────────────────
+
+bot.command('track', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 2) {
+    return ctx.reply('Usage: /track <channel> <on|off>\nExample: /track @channel on');
+  }
+  const [channel, action] = args;
+  const channels = loadChannels();
+  if (!channels[channel]) {
+    return ctx.reply(`Channel "${channel}" not found.`);
+  }
+  if (action === 'on') {
+    channels[channel].tracking = channels[channel].tracking || { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+    channels[channel].tracking.enabled = true;
+  } else if (action === 'off') {
+    if (channels[channel].tracking) channels[channel].tracking.enabled = false;
+  } else {
+    return ctx.reply('Action must be "on" or "off".');
+  }
+  saveChannels(channels);
+  ctx.reply(`Tracking for ${channel} is now ${action}.`);
+});
+
+bot.command('track_set', (ctx) => {
+  const args = ctx.message.text.split(' ').slice(1);
+  if (args.length < 3) {
+    return ctx.reply('Usage: /track_set <channel> <multipliers> <interval_sec>\nExample: /track_set @channel 2,3,5,10 3600');
+  }
+  const [channel, multStr, intervalStr] = args;
+  const channels = loadChannels();
+  if (!channels[channel]) {
+    return ctx.reply(`Channel "${channel}" not found.`);
+  }
+  const multipliers = multStr.split(',').map(Number).filter(n => !isNaN(n) && n > 0);
+  const interval = parseInt(intervalStr);
+  if (!multipliers.length || isNaN(interval) || interval < 60) {
+    return ctx.reply('Invalid multipliers (comma-separated) or interval (min 60s).');
+  }
+  channels[channel].tracking = { enabled: true, multipliers, interval };
+  saveChannels(channels);
+  ctx.reply(`Tracking for ${channel}: multipliers ${multipliers.join('X, ')}X, interval ${interval}s.`);
 });
 
 
