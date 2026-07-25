@@ -94,9 +94,10 @@ onMessage(async (sourceChannel, message) => {
       const summary = formatTokenSummary(info);
       if (!summary) continue;
 
-      let msg = mcLabel ? `⚡ Called at ${mcLabel}\n\n` : '';
-      msg += summary;
-      msg += `\n\n🧠 SM ${smCount}  🏆 KOL ${kolCount}`;
+      let msg = `🚀 <b>NEW SIGNAL</b>\n<code>${ca}</code>`;
+      if (mcLabel) msg += `\n⚡ Called ${mcLabel}`;
+      msg += '\n\n' + summary;
+      msg += `\n\n🧠 <b>${smCount}</b> Smart Money  ·  🏆 <b>${kolCount}</b> KOL`;
       await forwardMessage(target, msg, 'html');
 
       if (channelInfo.tracking?.enabled && dexPrice > 0) {

@@ -115,7 +115,9 @@ When enabled on a channel, every CA detected gets tracked:
 
 ### Message Format
 ```
-⚡ Called at $14.1K
+🚀 NEW SIGNAL
+<code>CA</code>
+⚡ Called $14.1K
 
 🪙 $HOODBIRD — Hoodbird
 ⛓️ ROBINHOOD · uniswap
@@ -124,7 +126,30 @@ When enabled on a channel, every CA detected gets tracked:
 👥 1,234  │  🧠 SM 0  │  🏆 KOL 0
 📊 1h Vol $1.1K  │  24h Vol $10.4K
 
-🧠 SM 5  🏆 KOL 2
+🧠 5 Smart Money  ·  🏆 2 KOL
+```
+
+### Tracking Alert Format
+```
+🚀 2X MULTIPLIER 🚀
+━━━━━━━━━━━━━━━━━━━━
+$HOODBIRD
+⚡ $14.1K  →  💰 $42.7K
+
+<code>CA</code>
+━━━━━━━━━━━━━━━━━━━━
+```
+
+### Periodic Update Format
+```
+🔄 PRICE UPDATE
+━━━━━━━━━━━━━━━━━━━━
+$HOODBIRD
+⚡ $14.1K  →  💰 $42.7K
+📈 2.0X from call
+
+<code>CA</code>
+━━━━━━━━━━━━━━━━━━━━
 ```
 
 ### Flow

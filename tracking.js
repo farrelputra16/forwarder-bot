@@ -78,12 +78,15 @@ async function checkAll() {
         const threshold = t.multipliers[i];
         if (mult >= threshold) {
           const mc = flatMC(dexInfo.marketCap);
+          const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
           const msg =
-`🚀 <b>${threshold}X</b> — ${t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4)}
-Called at ${t.calledAtMC}
-Current MC ${mc}
-Multiplier ${mult.toFixed(1)}X
-<code>${t.ca}</code>`;
+`🚀 <b>${threshold}X MULTIPLIER</b> 🚀
+━━━━━━━━━━━━━━━━━━━━
+<b>${label}</b>
+⚡ ${t.calledAtMC}  →  💰 ${mc}
+
+<code>${t.ca}</code>
+━━━━━━━━━━━━━━━━━━━━`;
           await forwardMessage(t.target, msg, 'html');
           t.lastAlertIdx = i;
         }
@@ -92,12 +95,16 @@ Multiplier ${mult.toFixed(1)}X
       // periodic update
       if (Date.now() - t.lastUpdate >= t.alertInterval) {
         const mc = flatMC(dexInfo.marketCap);
+        const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
         const msg =
-`🔄 Price Update — ${t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4)}
-Called at ${t.calledAtMC}
-Current MC ${mc}
-Multiplier ${mult.toFixed(1)}X
-<code>${t.ca}</code>`;
+`🔄 <b>PRICE UPDATE</b>
+━━━━━━━━━━━━━━━━━━━━
+<b>${label}</b>
+⚡ ${t.calledAtMC}  →  💰 ${mc}
+📈 ${mult.toFixed(1)}X from call
+
+<code>${t.ca}</code>
+━━━━━━━━━━━━━━━━━━━━`;
         await forwardMessage(t.target, msg, 'html');
         t.lastUpdate = Date.now();
       }
