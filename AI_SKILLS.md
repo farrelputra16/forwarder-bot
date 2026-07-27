@@ -110,12 +110,14 @@ When enabled on a channel, every CA detected gets tracked:
 - Storage: `tracking.json` (persists across restarts)
 
 ### Output Format (extract mode)
-1. **CA** — forwarded instantly via MTProto (regex lokal, 0 API call)
-2. **Called at + Token Summary + SM/KOL count** — sent via MTProto as one HTML message
+1. Extract Solana (base58) + EVM (`0x`) addresses via local regex
+2. DexScreener API → detect chain + called-at MC + token info
+3. GMGN CLI → SM/KOL stats (for sol/bsc/base/eth chains)
+4. One combined message: `🚀 NEW CALL BY {target_username}`, CA, Called MC, Token Summary, SM/KOL
 
 ### Message Format
 ```
-🚀 NEW SIGNAL
+🚀 NEW CALL BY channelname
 <code>CA</code>
 ⚡ Called $14.1K
 
@@ -128,6 +130,7 @@ When enabled on a channel, every CA detected gets tracked:
 
 🧠 5 Smart Money  ·  🏆 2 KOL
 ```
+`channelname` = target channel (username tanpa `@`).
 
 ### Tracking Alert Format
 ```

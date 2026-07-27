@@ -180,7 +180,7 @@ export async function fetchDexScreenerInfo(ca) {
 
 // ── Formatting ──────────────────────────────────────────────────
 
-function fmt(n, digits = 2) {
+export function fmt(n, digits = 2) {
   if (n === undefined || n === null || isNaN(n)) return '?';
   if (Math.abs(n) >= 1_000_000_000) return '$' + (n / 1_000_000_000).toFixed(1) + 'B';
   if (Math.abs(n) >= 1_000_000) return '$' + (n / 1_000_000).toFixed(1) + 'M';

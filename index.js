@@ -1,10 +1,10 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses } from './scraper.js';
+import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fetchTokenInfo, fmt } from './scraper.js';
 import { config } from './config.js';
+import { initTrackings, addTracking, getActiveCount } from './tracking.js';
 import fs from 'fs';
 import http from 'http';
 
-// Create a dummy HTTP server to satisfy Render's port binding requirement
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is running');
@@ -12,46 +12,81 @@ http.createServer((req, res) => {
   console.log(`HTTP server listening on port ${process.env.PORT || 3000}`);
 });
 
-// Initialize
 await initScraper(config.telegram.session);
+initTrackings();
+console.log(`[Tracking] ${getActiveCount()} active trackings loaded`);
 
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
 
-// Forwarding Logic
 onMessage(async (sourceChannel, message) => {
-  if (!message.text) return;
-  
+  if (!message?.text) return;
+
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
-  
-  // Use specific target if set, else fallback to config default
+
   const target = channelInfo.target || config.targetChannel;
-  const channelName = sourceChannel.replace('@', '');
+  const channelName = target.replace(/^https:\/\/t\.me\//, '').replace('@', '');
 
   if (channelInfo.mode === 'forward') {
-      const formattedMessage = `📢 *NEW CALL BY "@${channelName}"*\n\n${message.text}`;
-      await forwardMessage(target, formattedMessage);
+    await forwardMessage(target, `📢 *NEW CALL BY ${channelName}*\n\n${message.text}`);
   } else if (channelInfo.mode === 'extract') {
-      const cas = extractAddresses(message.text);
-      if (cas.length > 0) {
-          for(const ca of cas) {
-            const formattedCA = `💎 *NEW CALL BY "@${channelName}"*\n\n` +
-                                `Contract Address:\n\`${ca}\`\n\n` +
-                                `[Solscan](https://solscan.io/token/${ca})`;
-            await forwardMessage(target, formattedCA);
-          }
+    const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
+    if (!cas.length) return;
+
+    await Promise.all(cas.map(async (ca) => {
+      const dexInfo = await fetchDexScreenerInfo(ca);
+      const tokenInfo = dexInfo?.chain ? await fetchTokenInfo(ca, dexInfo.chain) : null;
+
+      const calledMC = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
+      const lines = [`🚀 *NEW CALL BY ${channelName}*`, `\`${ca}\``, `⚡ Called ${calledMC}`];
+
+      if (dexInfo) {
+        const chg = dexInfo.priceChange1h !== undefined
+          ? (dexInfo.priceChange1h > 0 ? `📈 +${dexInfo.priceChange1h.toFixed(1)}%` : `📉 ${dexInfo.priceChange1h.toFixed(1)}%`)
+          : '';
+        lines.push('', `🪙 $${dexInfo.symbol || '?'} — ${dexInfo.name || '?'}`);
+        lines.push(`⛓️ ${(dexInfo.chain || '?').toUpperCase()} · ${dexInfo.dexId || '?'}`);
+        lines.push(`💵 $${dexInfo.price || '?'}  ${chg}`);
+        lines.push(`💰 ${fmt(dexInfo.marketCap || 0)}  │  💧 ${fmt(dexInfo.liquidity || 0)}`);
+        if (dexInfo.volume1h || dexInfo.volume24h) {
+          lines.push(`📊 1h Vol ${dexInfo.volume1h ? fmt(dexInfo.volume1h) : ''}  │  24h Vol ${dexInfo.volume24h ? fmt(dexInfo.volume24h) : ''}`);
+        }
       }
+
+      const sm = tokenInfo?.wallet_tags_stat?.smart_wallets ?? 0;
+      const kol = tokenInfo?.wallet_tags_stat?.renowned_wallets ?? 0;
+      lines.push('', `🧠 ${sm} Smart Money  ·  🏆 ${kol} KOL`);
+
+      await forwardMessage(target, lines.join('\n'));
+
+      if (channelInfo.tracking?.enabled && dexInfo) {
+        const price = parseFloat(dexInfo.price);
+        if (price > 0) {
+          addTracking({
+            ca,
+            chain: dexInfo.chain || 'sol',
+            calledAtPrice: price,
+            calledAtMC: dexInfo.marketCap || 0,
+            symbol: dexInfo.symbol || ca.slice(0, 6),
+            target,
+            multipliers: channelInfo.tracking.multipliers,
+            alertInterval: channelInfo.tracking.interval,
+          });
+        }
+      }
+    }));
   }
 });
 
-// Start listeners from saved file
 const channels = loadChannels();
 for (const ch of Object.keys(channels)) {
-    await addChannelListener(ch).catch(console.error);
+  await addChannelListener(ch).catch(console.error);
 }
 
-// Start Bot
-bot.launch();
+bot.launch().catch(console.error);
 console.log('Bot running...');
+
+process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
+process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });
