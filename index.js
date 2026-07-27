@@ -49,8 +49,10 @@ onMessage(async (sourceChannel, message) => {
       const finalTokenInfo = tokenInfo || (dexInfo?.chain ? await fetchTokenInfo(ca, dexInfo.chain) : null);
 
       // Follow-up message — fire-and-forget
-      const calledMC = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
-      const lines = [`⚡ Called ${calledMC}`];
+      const price = dexInfo?.price ? parseFloat(dexInfo.price) : 0;
+      const formattedPrice = price >= 1 ? price.toFixed(2) : price.toExponential(4);
+      const formattedMC = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
+      const lines = [`⚡ Called ${formattedMC} | Price: $${formattedPrice}`];
 
       if (dexInfo) {
         const chg = dexInfo.priceChange1h !== undefined
