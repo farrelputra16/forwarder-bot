@@ -1,11 +1,10 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, extractCAFromDexScreener, resolveChain, fetchTokenInfo, fetchDexScreenerInfo, formatTokenSummary } from './scraper.js';
+import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses } from './scraper.js';
 import { config } from './config.js';
-import { addTracking, initTrackings } from './tracking.js';
 import fs from 'fs';
 import http from 'http';
 
-
+// Create a dummy HTTP server to satisfy Render's port binding requirement
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is running');
@@ -13,18 +12,13 @@ http.createServer((req, res) => {
   console.log(`HTTP server listening on port ${process.env.PORT || 3000}`);
 });
 
+// Initialize
 await initScraper(config.telegram.session);
 
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
 
-function fmtMC(n) {
-  if (!n || isNaN(n)) return null;
-  return n >= 1_000_000 ? '$' + (n / 1_000_000).toFixed(1) + 'M' :
-         n >= 1_000 ? '$' + (n / 1_000).toFixed(1) + 'K' :
-         '$' + Number(n).toFixed(2);
-}
-
+// Forwarding Logic
 onMessage(async (sourceChannel, message) => {
   if (!message.text) return;
   
@@ -32,104 +26,32 @@ onMessage(async (sourceChannel, message) => {
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
   
+  // Use specific target if set, else fallback to config default
   const target = channelInfo.target || config.targetChannel;
+  const channelName = sourceChannel.replace('@', '');
 
   if (channelInfo.mode === 'forward') {
-    await forwardMessage(target, message.text);
+      const formattedMessage = `📢 *NEW CALL BY "@${channelName}"*\n\n${message.text}`;
+      await forwardMessage(target, formattedMessage);
   } else if (channelInfo.mode === 'extract') {
-    const solCAs = extractAddresses(message.text);
-    const evmCAs = extractEVMAddresses(message.text);
-
-    await Promise.all([
-      ...solCAs.map(ca => forwardMessage(target, ca)),
-      ...evmCAs.map(ca => forwardMessage(target, ca)),
-    ]);
-
-    const seen = new Set();
-    const allItems = [];
-
-    for (const ca of solCAs) { seen.add(ca); allItems.push({ ca, chain: 'sol' }); }
-    for (const ca of evmCAs) { seen.add(ca); allItems.push({ ca, chain: null }); }
-
-    const [dexResults, chainResults] = await Promise.all([
-      extractCAFromDexScreener(message.text),
-      Promise.all(evmCAs.map(ca => resolveChain(ca))),
-    ]);
-
-    for (let i = 0; i < evmCAs.length; i++) {
-      const item = allItems.find(it => it.ca === evmCAs[i]);
-      if (item && chainResults[i]) item.chain = chainResults[i];
-    }
-
-    const newDex = dexResults.filter(({ ca }) => !seen.has(ca));
-    if (newDex.length) {
-      await Promise.all(newDex.map(({ ca }) => forwardMessage(target, ca)));
-      for (const { ca, chain } of newDex) { seen.add(ca); allItems.push({ ca, chain }); }
-    }
-
-    if (allItems.length === 0) return;
-
-    const infoResults = await Promise.all(
-      allItems.map(async ({ ca, chain }) => {
-        if (!chain) return { ca, mcLabel: null, info: null, dexPrice: null };
-
-        const [dexInfo, info] = await Promise.all([
-          fetchDexScreenerInfo(ca),
-          fetchTokenInfo(ca, chain),
-        ]);
-
-        const mcLabel = dexInfo?.marketCap ? fmtMC(dexInfo.marketCap) : null;
-        const dexPrice = dexInfo?.price ? parseFloat(dexInfo.price) : null;
-
-        return { ca, mcLabel, info, dexPrice };
-      })
-    );
-
-    for (const { ca, mcLabel, info, dexPrice } of infoResults) {
-      if (!info) continue;
-
-      const smCount = info.wallet_tags_stat?.smart_wallets ?? 0;
-      const kolCount = info.wallet_tags_stat?.renowned_wallets ?? 0;
-
-      const summary = formatTokenSummary(info);
-      if (!summary) continue;
-
-      let msg = `🚀 <b>NEW SIGNAL</b>\n<code>${ca}</code>`;
-      if (mcLabel) msg += `\n⚡ Called ${mcLabel}`;
-      msg += '\n\n' + summary;
-      msg += `\n\n🧠 <b>${smCount}</b> Smart Money  ·  🏆 <b>${kolCount}</b> KOL`;
-      await forwardMessage(target, msg, 'html');
-
-      if (channelInfo.tracking?.enabled && dexPrice > 0) {
-        addTracking({
-          ca, chain,
-          calledAtPrice: dexPrice,
-          calledAtMC: mcLabel || '',
-          symbol: info.symbol || '',
-          target,
-          multipliers: channelInfo.tracking.multipliers,
-          alertInterval: channelInfo.tracking.interval,
-        });
+      const cas = extractAddresses(message.text);
+      if (cas.length > 0) {
+          for(const ca of cas) {
+            const formattedCA = `💎 *NEW CALL BY "@${channelName}"*\n\n` +
+                                `Contract Address:\n\`${ca}\`\n\n` +
+                                `[Solscan](https://solscan.io/token/${ca})`;
+            await forwardMessage(target, formattedCA);
+          }
       }
-    }
   }
 });
 
-process.on('unhandledRejection', (err) => {
-  console.log('[unhandledRejection]', err.message || err);
-});
-process.on('uncaughtException', (err) => {
-  console.log('[uncaughtException]', err.message || err);
-});
-
+// Start listeners from saved file
 const channels = loadChannels();
 for (const ch of Object.keys(channels)) {
-  await addChannelListener(ch).catch(console.error);
+    await addChannelListener(ch).catch(console.error);
 }
 
-initTrackings();
-
-bot.launch().catch((err) => {
-  console.log('[Bot API]', err.message, '— commands disabled, MTProto still active');
-});
+// Start Bot
+bot.launch();
 console.log('Bot running...');
