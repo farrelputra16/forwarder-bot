@@ -36,14 +36,19 @@ onMessage(async (sourceChannel, message) => {
     if (!cas.length) return;
 
     await Promise.all(cas.map(async (ca) => {
-      // 1. Forward CA instantly — no API call
-      await forwardMessage(target, `🚀 *NEW CALL BY ${channelName}*\n\`${ca}\``);
+      const isSol = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ca);
 
-      // 2. Fetch DexScreener + GMGN
-      const dexInfo = await fetchDexScreenerInfo(ca);
-      const tokenInfo = dexInfo?.chain ? await fetchTokenInfo(ca, dexInfo.chain) : null;
+      // Parallel: send CA + fetch DexScreener + fetch GMGN (Solana)
+      const [_, dexInfo, tokenInfo] = await Promise.all([
+        forwardMessage(target, `🚀 *NEW CALL BY ${channelName}*\n\`${ca}\``),
+        fetchDexScreenerInfo(ca),
+        isSol ? fetchTokenInfo(ca, 'sol') : null,
+      ]);
 
-      // 3. Follow-up message with token data
+      // EVM: chain unknown upfront, fetch GMGN after DexScreener resolves
+      const finalTokenInfo = tokenInfo || (dexInfo?.chain ? await fetchTokenInfo(ca, dexInfo.chain) : null);
+
+      // Follow-up message — fire-and-forget
       const calledMC = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
       const lines = [`⚡ Called ${calledMC}`];
 
@@ -60,11 +65,11 @@ onMessage(async (sourceChannel, message) => {
         }
       }
 
-      const sm = tokenInfo?.wallet_tags_stat?.smart_wallets ?? 0;
-      const kol = tokenInfo?.wallet_tags_stat?.renowned_wallets ?? 0;
+      const sm = finalTokenInfo?.wallet_tags_stat?.smart_wallets ?? 0;
+      const kol = finalTokenInfo?.wallet_tags_stat?.renowned_wallets ?? 0;
       lines.push('', `🧠 ${sm} Smart Money  ·  🏆 ${kol} KOL`);
 
-      await forwardMessage(target, lines.join('\n'));
+      forwardMessage(target, lines.join('\n')).catch(() => {});
 
       if (channelInfo.tracking?.enabled && dexInfo) {
         const price = parseFloat(dexInfo.price);
