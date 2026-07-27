@@ -36,11 +36,16 @@ onMessage(async (sourceChannel, message) => {
     if (!cas.length) return;
 
     await Promise.all(cas.map(async (ca) => {
+      // 1. Forward CA instantly — no API call
+      await forwardMessage(target, `🚀 *NEW CALL BY ${channelName}*\n\`${ca}\``);
+
+      // 2. Fetch DexScreener + GMGN
       const dexInfo = await fetchDexScreenerInfo(ca);
       const tokenInfo = dexInfo?.chain ? await fetchTokenInfo(ca, dexInfo.chain) : null;
 
+      // 3. Follow-up message with token data
       const calledMC = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
-      const lines = [`🚀 *NEW CALL BY ${channelName}*`, `\`${ca}\``, `⚡ Called ${calledMC}`];
+      const lines = [`⚡ Called ${calledMC}`];
 
       if (dexInfo) {
         const chg = dexInfo.priceChange1h !== undefined

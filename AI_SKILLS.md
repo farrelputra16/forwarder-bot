@@ -110,15 +110,21 @@ When enabled on a channel, every CA detected gets tracked:
 - Storage: `tracking.json` (persists across restarts)
 
 ### Output Format (extract mode)
-1. Extract Solana (base58) + EVM (`0x`) addresses via local regex
+1. Extract Solana (base58) + EVM (`0x`) via local regex → **forward CA instantly** (no API call)
 2. DexScreener API → detect chain + called-at MC + token info
 3. GMGN CLI → SM/KOL stats (for sol/bsc/base/eth chains)
-4. One combined message: `🚀 NEW CALL BY {target_username}`, CA, Called MC, Token Summary, SM/KOL
+4. Follow-up message with token data
 
 ### Message Format
+
+**Message 1** (instant):
 ```
 🚀 NEW CALL BY channelname
 <code>CA</code>
+```
+
+**Message 2** (after DexScreener + GMGN resolve):
+```
 ⚡ Called $14.1K
 
 🪙 $HOODBIRD — Hoodbird
@@ -156,7 +162,7 @@ $HOODBIRD
 ```
 
 ### Flow
-1. Extract sol/evm CAs via local regex → forward parallel (instant)
-2. DexScreener API + GMGN CLI fetched in parallel per CA
-3. MC from DexScreener (fastest) used for "Called at" value
-4. One combined message sent after both resolve
+1. Extract sol/evm CAs via local regex → forward CA **instantly** (0 API calls)
+2. DexScreener API → detect chain, called-at MC, token info
+3. GMGN CLI → SM/KOL stats (for sol/bsc/base/eth chains)
+4. Follow-up message with called MC + token summary + SM/KOL

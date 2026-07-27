@@ -61,8 +61,7 @@ export function extractAddresses(text) {
 }
 
 export function extractEVMAddresses(text) {
-  const clean = text.replace(DEXSCREENER_REGEX, '');
-  const matches = clean.match(EVM_REGEX) || [];
+  const matches = text.match(EVM_REGEX) || [];
   return [...new Set(matches)];
 }
 
