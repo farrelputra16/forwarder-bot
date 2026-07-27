@@ -144,9 +144,18 @@ export async function fetchTokenHolders(ca, chain, tag = 'smart_degen', limit = 
   }
 }
 
-// ── Fetch: DexScreener ──────────────────────────────────────────
+// ── Fetch: DexScreener (promise-cached) ─────────────────────────
+
+const dexCache = new Map();
 
 export async function fetchDexScreenerInfo(ca) {
+  if (dexCache.has(ca)) return dexCache.get(ca);
+  const promise = _fetchDexScreener(ca).finally(() => dexCache.delete(ca));
+  dexCache.set(ca, promise);
+  return promise;
+}
+
+async function _fetchDexScreener(ca) {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${ca}`);
     const data = await res.json();
