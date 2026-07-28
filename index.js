@@ -18,6 +18,8 @@ initTrackings();
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
 
+const duplicateCache = new Map();
+
 // Forwarding Logic
 onMessage(async (sourceChannel, message) => {
   if (!message.text) return;
@@ -25,6 +27,14 @@ onMessage(async (sourceChannel, message) => {
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
+  
+  // Duplicate ignore check
+  if (channelInfo.ignoreDuplicate) {
+    const cacheKey = `${sourceChannel}_${message.text.substring(0, 50)}`;
+    if (duplicateCache.has(cacheKey)) return;
+    duplicateCache.set(cacheKey, Date.now());
+    setTimeout(() => duplicateCache.delete(cacheKey), 600000); // 10 mins
+  }
   
   const target = channelInfo.target || config.targetChannel;
 

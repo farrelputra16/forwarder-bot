@@ -178,9 +178,25 @@ bot.action('list_channels', (ctx) => {
 bot.action(/manage_(.+)/, (ctx) => {
   const channel = ctx.match[1];
   const info = loadChannels()[channel];
-  const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval}s)` : 'Tracking: OFF';
-  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}`, Markup.inlineKeyboard([
-    [Markup.button.callback(info.active ? 'Pause' : 'Start', `toggle_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
+  const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval/3600}h)` : 'Tracking: OFF';
+  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
+    [Markup.button.callback(info.active ? 'Pause Listener' : 'Start Listener', `toggle_${channel}`), Markup.button.callback(info.ignoreDuplicate ? 'Ignore Dup OFF' : 'Ignore Dup ON', `toggledup_${channel}`)],
+    [Markup.button.callback('Delete', `delete_${channel}`)],
+    [Markup.button.callback('Back', 'list_channels')]
+  ]));
+});
+
+bot.action(/toggledup_(.+)/, (ctx) => {
+  const channel = ctx.match[1];
+  const channels = loadChannels();
+  channels[channel].ignoreDuplicate = !channels[channel].ignoreDuplicate;
+  saveChannels(channels);
+  ctx.answerCbQuery(`Duplicate ignore is now ${channels[channel].ignoreDuplicate ? 'ON' : 'OFF'}`);
+  const info = channels[channel];
+  const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval/3600}h)` : 'Tracking: OFF';
+  ctx.editMessageText(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
+    [Markup.button.callback(info.active ? 'Pause Listener' : 'Start Listener', `toggle_${channel}`), Markup.button.callback(info.ignoreDuplicate ? 'Ignore Dup OFF' : 'Ignore Dup ON', `toggledup_${channel}`)],
+    [Markup.button.callback('Delete', `delete_${channel}`)],
     [Markup.button.callback('Back', 'list_channels')]
   ]));
 });
