@@ -28,7 +28,7 @@ onMessage(async (sourceChannel, message) => {
   
   const target = channelInfo.target || config.targetChannel;
   const sourceName = sourceChannel.replace('@', '');
-  const targetName = target.replace('@', '');
+  const targetName = target.split('/').pop().replace('@', '');
 
   if (channelInfo.mode === 'forward') {
       const formattedMessage = `📢 *NEW CALL BY "@${sourceName}"*\n\n${message.text}`;
@@ -39,7 +39,7 @@ onMessage(async (sourceChannel, message) => {
 
     for (const ca of cas) {
       // Message 1: Instant
-      const msg1 = `🚀 NEW CALL FROM "${sourceName}" TO "${targetName}"\n<code>${ca}</code>`;
+      const msg1 = `🚀 NEW CALL BY "${sourceName}"\n<code>${ca}</code>`;
       await forwardMessage(target, msg1, 'html');
 
       // Message 2: After Resolve
@@ -56,24 +56,24 @@ onMessage(async (sourceChannel, message) => {
                      `💵 $${dexInfo.price || '?'}  ${chg}\n` +
                      `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
                      `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
-                     `🧠 0 Smart Money  ·  🏆 0 KOL\n` +
-                     `Target: "${targetName}"`;
-      }
-      
-      // Tracking logic
-      if (channelInfo.tracking?.enabled && dexInfo) {
-        const price = parseFloat(dexInfo.price);
-        if (price > 0) {
-          addTracking({
-            ca,
-            chain: dexInfo.chain || 'sol',
-            calledAtPrice: price,
-            calledAtMC: mc,
-            symbol: dexInfo.symbol || ca.slice(0, 6),
-            target,
-            multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
-            alertInterval: (channelInfo.tracking.interval || 3600),
-          });
+                     `🧠 0 Smart Money  ·  🏆 0 KOL`;
+        await forwardMessage(target, msg2, 'html');
+        
+        // Tracking logic
+        if (channelInfo.tracking?.enabled && dexInfo) {
+            const price = parseFloat(dexInfo.price);
+            if (price > 0) {
+            addTracking({
+                ca,
+                chain: dexInfo.chain || 'sol',
+                calledAtPrice: price,
+                calledAtMC: mc,
+                symbol: dexInfo.symbol || ca.slice(0, 6),
+                target,
+                multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
+                alertInterval: (channelInfo.tracking.interval || 3600),
+            });
+            }
         }
       }
     }
