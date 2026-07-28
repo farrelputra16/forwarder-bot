@@ -27,19 +27,16 @@ onMessage(async (sourceChannel, message) => {
   if (!channelInfo || !channelInfo.active) return;
   
   const target = channelInfo.target || config.targetChannel;
-  const sourceName = sourceChannel.replace('@', '');
-  const targetName = target.split('/').pop().replace('@', '');
 
   if (channelInfo.mode === 'forward') {
-      const formattedMessage = `📢 *NEW CALL BY "@${sourceName}"*\n\n${message.text}`;
-      await forwardMessage(target, formattedMessage);
+      await forwardMessage(target, message.text);
   } else if (channelInfo.mode === 'extract') {
     const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
     if (!cas.length) return;
 
     for (const ca of cas) {
       // Message 1: Instant
-      const msg1 = `🚀 NEW CALL BY "${sourceName}"\n<code>${ca}</code>`;
+      const msg1 = `NEW CALL\n<code>${ca}</code>`;
       await forwardMessage(target, msg1, 'html');
 
       // Message 2: After Resolve
