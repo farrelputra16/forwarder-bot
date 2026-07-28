@@ -76,6 +76,7 @@ onMessage(async (sourceChannel, message) => {
         }
       }
     }
+  }
 });
 
 const channels = loadChannels();
