@@ -40,8 +40,7 @@ onMessage(async (sourceChannel, message) => {
             const mc = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
             const formattedCA = `NEW CALL BY "${channelName}"\n\n` +
                                 `Contract Address:\n${ca}\n` +
-                                `Called MC: ${mc}\n` +
-                                `[Solscan](https://solscan.io/token/${ca})`;
+                                `Called MC: ${mc}`;
             await forwardMessage(target, formattedCA);
             
             if (channelInfo.tracking?.enabled && dexInfo) {
