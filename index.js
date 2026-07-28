@@ -27,10 +27,11 @@ onMessage(async (sourceChannel, message) => {
   if (!channelInfo || !channelInfo.active) return;
   
   const target = channelInfo.target || config.targetChannel;
-  const channelName = sourceChannel.replace('@', '');
+  const sourceName = sourceChannel.replace('@', '');
+  const targetName = target.replace('@', '');
 
   if (channelInfo.mode === 'forward') {
-      const formattedMessage = `📢 *NEW CALL BY "@${channelName}"*\n\n${message.text}`;
+      const formattedMessage = `📢 *NEW CALL BY "@${sourceName}"*\n\n${message.text}`;
       await forwardMessage(target, formattedMessage);
   } else if (channelInfo.mode === 'extract') {
     const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
@@ -38,7 +39,7 @@ onMessage(async (sourceChannel, message) => {
 
     for (const ca of cas) {
       // Message 1: Instant
-      const msg1 = `🚀 NEW CALL BY ${channelName}\n<code>${ca}</code>`;
+      const msg1 = `🚀 NEW CALL FROM "${sourceName}" TO "${targetName}"\n<code>${ca}</code>`;
       await forwardMessage(target, msg1, 'html');
 
       // Message 2: After Resolve
@@ -55,8 +56,8 @@ onMessage(async (sourceChannel, message) => {
                      `💵 $${dexInfo.price || '?'}  ${chg}\n` +
                      `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
                      `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
-                     `🧠 0 Smart Money  ·  🏆 0 KOL`;
-        await forwardMessage(target, msg2, 'html');
+                     `🧠 0 Smart Money  ·  🏆 0 KOL\n` +
+                     `Target: "${targetName}"`;
       }
       
       // Tracking logic
