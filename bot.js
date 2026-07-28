@@ -110,27 +110,25 @@ bot.on('text', async (ctx) => {
     state.target = ctx.message.text;
     state.step = 'TRACKING';
     ctx.reply('Enable price tracking?', Markup.inlineKeyboard([
-      [Markup.button.callback('Yes (2X/3X/5X/10X, every 1h)', 'track_yes')],
-      [Markup.button.callback('No', 'track_no')],
+      [Markup.button.callback('Yes', 'track_yes'), Markup.button.callback('No', 'track_no')],
     ]));
+  } else if (state.step === 'INTERVAL') {
+    const intervalHours = parseInt(ctx.message.text);
+    if (isNaN(intervalHours) || intervalHours < 1) {
+      return ctx.reply('Please enter a valid number of hours (e.g., 1, 6, 12).');
+    }
+    state.interval = intervalHours * 3600;
+    state.step = 'TRACKING_FINAL';
+    processTrackingFinal(ctx, state);
   }
-});
-
-bot.action(/mode_(.+)/, (ctx) => {
-  const state = userState.get(ctx.from.id);
-  if (!state) return;
-  state.mode = ctx.match[1].replace('mode_', '');
-  state.step = 'TARGET';
-  ctx.editMessageText('Enter the target channel username (e.g., @target):');
 });
 
 bot.action('track_yes', (ctx) => {
   const state = userState.get(ctx.from.id);
   if (!state) return;
   state.tracking = true;
-  state.step = 'TRACKING_FINAL';
-  ctx.editMessageText('Saving with tracking enabled...');
-  processTrackingFinal(ctx, state);
+  state.step = 'INTERVAL';
+  ctx.editMessageText('Enter update interval in hours (e.g., 1, 6, 12):');
 });
 
 bot.action('track_no', (ctx) => {
@@ -142,12 +140,20 @@ bot.action('track_no', (ctx) => {
   processTrackingFinal(ctx, state);
 });
 
+bot.action(/mode_(.+)/, (ctx) => {
+  const state = userState.get(ctx.from.id);
+  if (!state) return;
+  state.mode = ctx.match[1].replace('mode_', '');
+  state.step = 'TARGET';
+  ctx.editMessageText('Enter the target channel username (e.g., @target):');
+});
+
 async function processTrackingFinal(ctx, state) {
   const channels = loadChannels();
   const link = state.link;
   const entry = { mode: state.mode, target: state.target, active: true };
   if (state.tracking) {
-    entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+    entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: state.interval };
   }
   channels[link] = entry;
   saveChannels(channels);
