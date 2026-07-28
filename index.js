@@ -30,7 +30,7 @@ onMessage(async (sourceChannel, message) => {
   const channelName = sourceChannel.replace('@', '');
 
   if (channelInfo.mode === 'forward') {
-      const formattedMessage = `NEW CALL BY "${channelName}"\n\n${message.text}`;
+      const formattedMessage = `📢 *NEW CALL BY "@${channelName}"*\n\n${message.text}`;
       await forwardMessage(target, formattedMessage);
   } else if (channelInfo.mode === 'extract') {
       const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
@@ -38,9 +38,10 @@ onMessage(async (sourceChannel, message) => {
           for(const ca of cas) {
             const dexInfo = await fetchDexScreenerInfo(ca);
             const mc = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
-            const formattedCA = `NEW CALL BY "${channelName}"\n\n` +
-                                `Contract Address:\n${ca}\n` +
-                                `Called MC: ${mc}`;
+            const formattedCA = `💎 *NEW CALL BY "@${channelName}"*\n\n` +
+                                `Contract Address:\n\`${ca}\`\n` +
+                                `Called MC: ${mc}\n` +
+                                `[Solscan](https://solscan.io/token/${ca})`;
             await forwardMessage(target, formattedCA);
             
             if (channelInfo.tracking?.enabled && dexInfo) {
