@@ -17,8 +17,7 @@ initTrackings();
 
 const DB_FILE = './channels.json';
 const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
-
-const duplicateCache = new Map();
+const saveChannels = (channels) => fs.writeFileSync(DB_FILE, JSON.stringify(channels));
 
 // Forwarding Logic
 onMessage(async (sourceChannel, message) => {
@@ -27,14 +26,6 @@ onMessage(async (sourceChannel, message) => {
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
-  
-  // Duplicate ignore check
-  if (channelInfo.ignoreDuplicate) {
-    const cacheKey = `${sourceChannel}_${message.text.substring(0, 50)}`;
-    if (duplicateCache.has(cacheKey)) return;
-    duplicateCache.set(cacheKey, Date.now());
-    setTimeout(() => duplicateCache.delete(cacheKey), 600000); // 10 mins
-  }
   
   const target = channelInfo.target || config.targetChannel;
 
@@ -45,6 +36,14 @@ onMessage(async (sourceChannel, message) => {
     if (!cas.length) return;
 
     for (const ca of cas) {
+      // Logic: Ignore Duplicate (Permanent)
+      if (channelInfo.ignoreDuplicate) {
+        if (!channelInfo.seenCAs) channelInfo.seenCAs = [];
+        if (channelInfo.seenCAs.includes(ca)) continue; // skip this CA
+        channelInfo.seenCAs.push(ca);
+        saveChannels(channels); // Persist updated CA list
+      }
+
       // Message 1: Instant
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
       await forwardMessage(target, msg1, 'html');
