@@ -8,7 +8,8 @@ let checkTimer = null;
 
 function flatMC(n) {
   if (!n || isNaN(n)) return '?';
-  return n >= 1_000_000 ? '$' + (n / 1_000_000).toFixed(1) + 'M' :
+  return n >= 1_000_000_000 ? '$' + (n / 1_000_000_000).toFixed(1) + 'B' :
+         n >= 1_000_000 ? '$' + (n / 1_000_000).toFixed(1) + 'M' :
          n >= 1_000 ? '$' + (n / 1_000).toFixed(1) + 'K' :
          '$' + Number(n).toFixed(2);
 }
@@ -80,12 +81,12 @@ async function checkAll() {
           const mc = flatMC(dexInfo.marketCap);
           const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
           const msg =
-`🚀 <b>${threshold}X MULTIPLIER</b> 🚀
+`🚀 ${threshold}X MULTIPLIER 🚀
 ━━━━━━━━━━━━━━━━━━━━
-<b>${label}</b>
+${label}
 ⚡ ${t.calledAtMC}  →  💰 ${mc}
 
-<code>${t.ca}</code>
+${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
           await forwardMessage(t.target, msg, 'html');
           t.lastAlertIdx = i;
@@ -97,13 +98,13 @@ async function checkAll() {
         const mc = flatMC(dexInfo.marketCap);
         const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
         const msg =
-`🔄 <b>PRICE UPDATE</b>
+`🔄 PRICE UPDATE
 ━━━━━━━━━━━━━━━━━━━━
-<b>${label}</b>
+${label}
 ⚡ ${t.calledAtMC}  →  💰 ${mc}
 📈 ${mult.toFixed(1)}X from call
 
-<code>${t.ca}</code>
+${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
         await forwardMessage(t.target, msg, 'html');
         t.lastUpdate = Date.now();
