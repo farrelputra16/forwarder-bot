@@ -33,35 +33,49 @@ onMessage(async (sourceChannel, message) => {
       const formattedMessage = `📢 *NEW CALL BY "@${channelName}"*\n\n${message.text}`;
       await forwardMessage(target, formattedMessage);
   } else if (channelInfo.mode === 'extract') {
-      const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
-      if (cas.length > 0) {
-          for(const ca of cas) {
-            const dexInfo = await fetchDexScreenerInfo(ca);
-            const mc = dexInfo?.marketCap ? fmt(dexInfo.marketCap) : '?';
-            const formattedCA = `💎 *NEW CALL BY "@${channelName}"*\n\n` +
-                                `Contract Address:\n\`${ca}\`\n` +
-                                `Called MC: ${mc}\n` +
-                                `[Solscan](https://solscan.io/token/${ca})`;
-            await forwardMessage(target, formattedCA);
-            
-            if (channelInfo.tracking?.enabled && dexInfo) {
-              const price = parseFloat(dexInfo.price);
-              if (price > 0) {
-                addTracking({
-                  ca,
-                  chain: dexInfo.chain || 'sol',
-                  calledAtPrice: price,
-                  calledAtMC: mc,
-                  symbol: dexInfo.symbol || ca.slice(0, 6),
-                  target,
-                  multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
-                  alertInterval: (channelInfo.tracking.interval || 3600),
-                });
-              }
-            }
-          }
+    const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
+    if (!cas.length) return;
+
+    for (const ca of cas) {
+      // Message 1: Instant
+      const msg1 = `🚀 NEW CALL BY ${channelName}\n<code>${ca}</code>`;
+      await forwardMessage(target, msg1, 'html');
+
+      // Message 2: After Resolve
+      const dexInfo = await fetchDexScreenerInfo(ca);
+      if (dexInfo) {
+        const mc = fmt(dexInfo.marketCap || 0);
+        const p = parseFloat(dexInfo.price);
+        const chg = dexInfo.priceChange1h !== undefined
+          ? (dexInfo.priceChange1h > 0 ? `📈 +${dexInfo.priceChange1h.toFixed(1)}%` : `📉 ${dexInfo.priceChange1h.toFixed(1)}%`)
+          : '';
+        const msg2 = `⚡ Called ${mc}\n\n` +
+                     `🪙 $${dexInfo.symbol || '?'} — ${dexInfo.name || '?'}\n` +
+                     `⛓️ ${(dexInfo.chain || '?').toUpperCase()} · ${dexInfo.dexId || '?'}\n` +
+                     `💵 $${dexInfo.price || '?'}  ${chg}\n` +
+                     `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
+                     `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
+                     `🧠 0 Smart Money  ·  🏆 0 KOL`;
+        await forwardMessage(target, msg2, 'html');
       }
-  }
+      
+      // Tracking logic
+      if (channelInfo.tracking?.enabled && dexInfo) {
+        const price = parseFloat(dexInfo.price);
+        if (price > 0) {
+          addTracking({
+            ca,
+            chain: dexInfo.chain || 'sol',
+            calledAtPrice: price,
+            calledAtMC: mc,
+            symbol: dexInfo.symbol || ca.slice(0, 6),
+            target,
+            multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
+            alertInterval: (channelInfo.tracking.interval || 3600),
+          });
+        }
+      }
+    }
 });
 
 const channels = loadChannels();
