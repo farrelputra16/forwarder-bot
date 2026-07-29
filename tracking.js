@@ -73,6 +73,8 @@ async function checkAll() {
       if (!curPrice || curPrice === 0) continue;
 
       const mult = curPrice / t.calledAtPrice;
+      const pct = (mult - 1) * 100;
+      const changeStr = mult >= 2 ? `${mult.toFixed(1)}X` : `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`;
 
       // multiplier alerts
       for (let i = t.lastAlertIdx + 1; i < t.multipliers.length; i++) {
@@ -102,7 +104,7 @@ ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━
 ${label}
 ⚡ ${t.calledAtMC}  →  💰 ${mc}
-📈 ${mult.toFixed(1)}X from call
+📈 ${changeStr} from call
 
 ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
