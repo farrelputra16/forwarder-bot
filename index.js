@@ -26,29 +26,26 @@ onMessage(async (sourceChannel, message) => {
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
-  
-  const target = channelInfo.target || config.targetChannel;
+
+  const targets = channelInfo.targets || (channelInfo.target ? [channelInfo.target] : [config.targetChannel]);
 
   if (channelInfo.mode === 'forward') {
-      await forwardMessage(target, message.text);
+    for (const t of targets) await forwardMessage(t, message.text);
   } else if (channelInfo.mode === 'extract') {
     const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
     if (!cas.length) return;
 
     for (const ca of cas) {
-      // Logic: Ignore Duplicate (Permanent)
       if (channelInfo.ignoreDuplicate) {
         if (!channelInfo.seenCAs) channelInfo.seenCAs = [];
-        if (channelInfo.seenCAs.includes(ca)) continue; // skip this CA
+        if (channelInfo.seenCAs.includes(ca)) continue;
         channelInfo.seenCAs.push(ca);
-        saveChannels(channels); // Persist updated CA list
+        saveChannels(channels);
       }
 
-      // Message 1: Instant
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
-      await forwardMessage(target, msg1, 'html');
+      for (const t of targets) await forwardMessage(t, msg1, 'html');
 
-      // Message 2: After Resolve
       const dexInfo = await fetchDexScreenerInfo(ca);
       if (dexInfo) {
         const mc = fmt(dexInfo.marketCap || 0);
@@ -63,9 +60,8 @@ onMessage(async (sourceChannel, message) => {
                      `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
                      `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
                      `🧠 0 Smart Money  ·  🏆 0 KOL`;
-        await forwardMessage(target, msg2, 'html');
-        
-        // Tracking logic
+        for (const t of targets) await forwardMessage(t, msg2, 'html');
+
         if (channelInfo.tracking?.enabled && dexInfo) {
             const price = parseFloat(dexInfo.price);
             if (price > 0) {
@@ -75,7 +71,7 @@ onMessage(async (sourceChannel, message) => {
                 calledAtPrice: price,
                 calledAtMC: mc,
                 symbol: dexInfo.symbol || ca.slice(0, 6),
-                target,
+                target: targets[0],
                 multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
                 alertInterval: (channelInfo.tracking.interval || 3600),
             });

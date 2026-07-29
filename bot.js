@@ -61,9 +61,13 @@ bot.command('set_target', (ctx) => {
   if (!channels[channel]) {
     return ctx.reply(`Channel "${channel}" not found. Add it first with /add_channel`);
   }
-  channels[channel].target = target;
+  if (!channels[channel].targets) {
+    channels[channel].targets = [channels[channel].target].filter(Boolean);
+    delete channels[channel].target;
+  }
+  channels[channel].targets.push(target);
   saveChannels(channels);
-  ctx.reply(`Target for ${channel} set to "${target}".`);
+  ctx.reply(`Target added for ${channel}: ${target}\n\nAll targets: ${channels[channel].targets.join(', ')}`);
 });
 
 bot.command('refresh', async (ctx) => {
@@ -107,10 +111,11 @@ bot.on('text', async (ctx) => {
       [Markup.button.callback('Extract CA', 'mode_extract'), Markup.button.callback('Forward All', 'mode_forward')]
     ]));
   } else if (state.step === 'TARGET') {
-    state.target = ctx.message.text;
-    state.step = 'TRACKING';
-    ctx.reply('Enable price tracking?', Markup.inlineKeyboard([
-      [Markup.button.callback('Yes', 'track_yes'), Markup.button.callback('No', 'track_no')],
+    if (!state.targets) state.targets = [];
+    state.targets.push(ctx.message.text);
+    ctx.reply(`✓ Target added: ${ctx.message.text}\n\nAdd another target?`, Markup.inlineKeyboard([
+      [Markup.button.callback('Yes, add another', 'target_add')],
+      [Markup.button.callback('No, done', 'target_done')],
     ]));
   } else if (state.step === 'INTERVAL') {
     const intervalHours = parseInt(ctx.message.text);
@@ -120,6 +125,19 @@ bot.on('text', async (ctx) => {
     state.interval = intervalHours * 3600;
     state.step = 'TRACKING_FINAL';
     processTrackingFinal(ctx, state);
+  } else if (state.step === 'ADD_TARGET') {
+    const channels = loadChannels();
+    if (!channels[state.channel]) return ctx.reply('Channel not found.');
+    if (!channels[state.channel].targets) {
+      channels[state.channel].targets = [channels[state.channel].target].filter(Boolean);
+      delete channels[state.channel].target;
+    }
+    channels[state.channel].targets.push(ctx.message.text);
+    saveChannels(channels);
+    ctx.reply(`✓ Target added: ${ctx.message.text}\n\nAll targets: ${channels[state.channel].targets.join(', ')}`, Markup.inlineKeyboard([
+      [Markup.button.callback('Add Another', `addtarget_${state.channel}`)],
+      [Markup.button.callback('Done', 'addtarget_done')],
+    ]));
   }
 });
 
@@ -148,10 +166,23 @@ bot.action(/mode_(.+)/, (ctx) => {
   ctx.editMessageText('Enter the target channel username (e.g., @target):');
 });
 
+bot.action('target_add', (ctx) => {
+  ctx.editMessageText('Enter another target channel username:');
+});
+
+bot.action('target_done', (ctx) => {
+  const state = userState.get(ctx.from.id);
+  if (!state) return;
+  state.step = 'TRACKING';
+  ctx.editMessageText('Enable price tracking?', Markup.inlineKeyboard([
+    [Markup.button.callback('Yes', 'track_yes'), Markup.button.callback('No', 'track_no')],
+  ]));
+});
+
 async function processTrackingFinal(ctx, state) {
   const channels = loadChannels();
   const link = state.link;
-  const entry = { mode: state.mode, target: state.target, active: true };
+  const entry = { mode: state.mode, targets: state.targets, active: true };
   if (state.tracking) {
     entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: state.interval };
   }
@@ -159,7 +190,7 @@ async function processTrackingFinal(ctx, state) {
   saveChannels(channels);
   try {
     await addChannelListener(link);
-    ctx.reply(`Success! Monitoring ${link}\nMode: ${state.mode}\nTarget: ${state.target}${state.tracking ? '\nTracking: ON' : ''}`);
+    ctx.reply(`Success! Monitoring ${link}\nMode: ${state.mode}\nTargets: ${state.targets.join(', ')}${state.tracking ? '\nTracking: ON' : ''}`);
   } catch (err) {
     ctx.reply(`Error starting listener: ${err.message}`);
   }
@@ -175,13 +206,17 @@ bot.action('list_channels', (ctx) => {
   ctx.reply('Select a channel:', Markup.inlineKeyboard(buttons));
 });
 
+function targetsDisplay(info) {
+  return info.targets ? info.targets.join(', ') : info.target || 'Default';
+}
+
 bot.action(/manage_(.+)/, (ctx) => {
   const channel = ctx.match[1];
   const info = loadChannels()[channel];
   const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval/3600}h)` : 'Tracking: OFF';
-  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
+  ctx.reply(`Manage ${channel}:\nMode: ${info.mode}\nTargets: ${targetsDisplay(info)}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
     [Markup.button.callback(info.active ? 'Pause Listener' : 'Start Listener', `toggle_${channel}`), Markup.button.callback(info.ignoreDuplicate ? 'Ignore Dup OFF' : 'Ignore Dup ON', `toggledup_${channel}`)],
-    [Markup.button.callback('Delete', `delete_${channel}`)],
+    [Markup.button.callback('Add Target', `addtarget_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
     [Markup.button.callback('Back', 'list_channels')]
   ]));
 });
@@ -194,9 +229,9 @@ bot.action(/toggledup_(.+)/, (ctx) => {
   ctx.answerCbQuery(`Duplicate ignore is now ${channels[channel].ignoreDuplicate ? 'ON' : 'OFF'}`);
   const info = channels[channel];
   const track = info.tracking?.enabled ? `Tracking: ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval/3600}h)` : 'Tracking: OFF';
-  ctx.editMessageText(`Manage ${channel}:\nMode: ${info.mode}\nTarget: ${info.target || 'Default'}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
+  ctx.editMessageText(`Manage ${channel}:\nMode: ${info.mode}\nTargets: ${targetsDisplay(info)}\n${track}\nIgnore Duplicate: ${info.ignoreDuplicate ? 'ON' : 'OFF'}`, Markup.inlineKeyboard([
     [Markup.button.callback(info.active ? 'Pause Listener' : 'Start Listener', `toggle_${channel}`), Markup.button.callback(info.ignoreDuplicate ? 'Ignore Dup OFF' : 'Ignore Dup ON', `toggledup_${channel}`)],
-    [Markup.button.callback('Delete', `delete_${channel}`)],
+    [Markup.button.callback('Add Target', `addtarget_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
     [Markup.button.callback('Back', 'list_channels')]
   ]));
 });
@@ -207,8 +242,10 @@ bot.action(/toggle_(.+)/, (ctx) => {
   channels[channel].active = !channels[channel].active;
   saveChannels(channels);
   ctx.answerCbQuery(`Channel ${channel} is now ${channels[channel].active ? 'active' : 'paused'}`);
-  ctx.editMessageText(`Manage ${channel}:\nMode: ${channels[channel].mode}\nTarget: ${channels[channel].target || 'Default'}`, Markup.inlineKeyboard([
-    [Markup.button.callback(channels[channel].active ? 'Pause' : 'Start', `toggle_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
+  const info = channels[channel];
+  ctx.editMessageText(`Manage ${channel}:\nMode: ${info.mode}\nTargets: ${targetsDisplay(info)}`, Markup.inlineKeyboard([
+    [Markup.button.callback(info.active ? 'Pause Listener' : 'Start Listener', `toggle_${channel}`), Markup.button.callback(info.ignoreDuplicate ? 'Ignore Dup OFF' : 'Ignore Dup ON', `toggledup_${channel}`)],
+    [Markup.button.callback('Add Target', `addtarget_${channel}`), Markup.button.callback('Delete', `delete_${channel}`)],
     [Markup.button.callback('Back', 'list_channels')]
   ]));
 });
@@ -220,6 +257,19 @@ bot.action(/delete_(.+)/, (ctx) => {
   saveChannels(channels);
   ctx.answerCbQuery('Deleted');
   ctx.editMessageText('Channel deleted.', Markup.inlineKeyboard([[Markup.button.callback('Back', 'list_channels')]]));
+});
+
+bot.action(/addtarget_(.+)/, (ctx) => {
+  const channel = ctx.match[1];
+  const channels = loadChannels();
+  if (!channels[channel]) return ctx.answerCbQuery('Channel not found');
+  userState.set(ctx.from.id, { step: 'ADD_TARGET', channel });
+  ctx.editMessageText(`Send the new target username for ${channel}:`);
+});
+
+bot.action('addtarget_done', (ctx) => {
+  userState.delete(ctx.from.id);
+  ctx.editMessageText('Done.');
 });
 
 // ── Price Tracking ──────────────────────────────────────────────
