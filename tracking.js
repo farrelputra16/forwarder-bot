@@ -29,7 +29,7 @@ export function initTrackings() {
   if (Object.keys(trackings).length) startChecker();
 }
 
-export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, multipliers, alertInterval }) {
+export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, multipliers, alertInterval, periodic }) {
   const key = `${chain}_${ca}`;
   if (trackings[key]) return;
   trackings[key] = {
@@ -40,6 +40,7 @@ export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, targ
     lastAlertIdx: -1,
     lastUpdate: Date.now(),
     createdAt: Date.now(),
+    periodic: periodic || 'on',
   };
   save();
   startChecker();
@@ -96,10 +97,11 @@ ${t.ca}
       }
 
       // periodic update
-      if (Date.now() - t.lastUpdate >= t.alertInterval) {
-        const mc = flatMC(dexInfo.marketCap);
-        const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
-        const msg =
+      if (t.periodic !== 'paused' && t.periodic !== 'off') {
+        if (Date.now() - t.lastUpdate >= t.alertInterval) {
+          const mc = flatMC(dexInfo.marketCap);
+          const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
+          const msg =
 `🔄 PRICE UPDATE
 ━━━━━━━━━━━━━━━━━━━━
 ${label}
@@ -108,12 +110,25 @@ ${label}
 
 ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
-        await forwardMessage(t.target, msg, 'html');
-        t.lastUpdate = Date.now();
+          await forwardMessage(t.target, msg, 'html');
+          t.lastUpdate = Date.now();
+        }
       }
     } catch (e) {
       console.log(`[Tracking] check failed ${key}: ${e.message}`);
     }
   }
   save();
+}
+
+export function updateTrackingPeriodicStatus(targetList, status) {
+  load();
+  let changed = false;
+  for (const t of Object.values(trackings)) {
+    if (targetList.includes(t.target)) {
+      t.periodic = status;
+      changed = true;
+    }
+  }
+  if (changed) save();
 }
