@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf';
 import { config } from './config.js';
 import fs from 'fs';
 import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary } from './scraper.js';
+import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
 
 export const bot = new Telegraf(config.botToken);
 
@@ -16,6 +17,12 @@ function targets(info) {
   return info.targets ? info.targets.join(', ') : info.target || 'Default';
 }
 
+function stLabel(s) {
+  if (s === 'paused') return '⏸ Paused';
+  if (s === 'off') return '❌ Off';
+  return '🟢 On';
+}
+
 function detail(ch, info) {
   const lines = [
     `📡 \`${ch}\``,
@@ -27,6 +34,7 @@ function detail(ch, info) {
   ];
   if (info.tracking?.enabled) {
     lines.push(`┃ Tracking: 📊 ON (${info.tracking.multipliers.join('X/')}X, ${info.tracking.interval / 3600}h)`);
+    lines.push(`┃ X Alerts: ${stLabel(info.tracking.xAlerts)}  ·  🔄 Update: ${stLabel(info.tracking.periodic)}`);
   }
   return lines.join('\n');
 }
@@ -39,25 +47,34 @@ function navRow(page, total, prefix) {
   return row;
 }
 
+function cycleLabel(what, s) {
+  if (s === 'on') return `⏸ Pause ${what}`;
+  if (s === 'paused') return `❌ Off ${what}`;
+  return `🟢 On ${what}`;
+}
+
 function manageKb(ch, info) {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: info.active ? '⏸ Pause' : '▶️ Resume', callback_data: `toggle_${ch}` },
-          { text: info.ignoreDuplicate ? '🔁 Dup ON' : '🔁 Dup OFF', callback_data: `toggledup_${ch}` }
-        ],
-        [
-          { text: info.mode === 'extract' ? '📨 Switch to Forward' : '📋 Switch to Extract', callback_data: `switchmode_${ch}` },
-          { text: '🎯 Add Target', callback_data: `addtarget_${ch}` }
-        ],
-        [
-          { text: '🗑 Delete', callback_data: `delete_${ch}` },
-          { text: '◀️ Channels', callback_data: 'list_channels_0' }
-        ]
-      ]
-    }
-  };
+  const rows = [
+    [
+      { text: info.active ? '⏸ Pause' : '▶️ Resume', callback_data: `toggle_${ch}` },
+      { text: info.ignoreDuplicate ? '🔁 Dup ON' : '🔁 Dup OFF', callback_data: `toggledup_${ch}` }
+    ]
+  ];
+  if (info.tracking?.enabled) {
+    rows.push([
+      { text: cycleLabel('X Alerts', info.tracking.xAlerts), callback_data: `cyclex_${ch}` },
+      { text: cycleLabel('Updates', info.tracking.periodic), callback_data: `cyclep_${ch}` }
+    ]);
+  }
+  rows.push([
+    { text: info.mode === 'extract' ? '📨 Switch to Forward' : '📋 Switch to Extract', callback_data: `switchmode_${ch}` },
+    { text: '🎯 Add Target', callback_data: `addtarget_${ch}` }
+  ]);
+  rows.push([
+    { text: '🗑 Delete', callback_data: `delete_${ch}` },
+    { text: '◀️ Channels', callback_data: 'list_channels_0' }
+  ]);
+  return { reply_markup: { inline_keyboard: rows } };
 }
 
 function menuKb() {
@@ -227,6 +244,42 @@ bot.action(/^switchmode_(.+)$/, async (ctx) => {
   chs[ch].mode = chs[ch].mode === 'extract' ? 'forward' : 'extract';
   saveChannels(chs);
   await ctx.answerCbQuery(`Mode: ${chs[ch].mode === 'extract' ? '📋 Extract' : '📨 Forward'}`);
+  await ctx.editMessageText(detail(ch, chs[ch]), {
+    parse_mode: 'Markdown',
+    ...manageKb(ch, chs[ch])
+  });
+});
+
+function cycle(s) {
+  return s === 'on' ? 'paused' : s === 'paused' ? 'off' : 'on';
+}
+
+bot.action(/^cyclex_(.+)$/, async (ctx) => {
+  const ch = ctx.match[1];
+  const chs = loadChannels();
+  if (!chs[ch]) return ctx.answerCbQuery('Not found');
+  const next = cycle(chs[ch].tracking?.xAlerts);
+  if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+  chs[ch].tracking.xAlerts = next;
+  saveChannels(chs);
+  updateTrackingXStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next);
+  await ctx.answerCbQuery(`X Alerts: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
+  await ctx.editMessageText(detail(ch, chs[ch]), {
+    parse_mode: 'Markdown',
+    ...manageKb(ch, chs[ch])
+  });
+});
+
+bot.action(/^cyclep_(.+)$/, async (ctx) => {
+  const ch = ctx.match[1];
+  const chs = loadChannels();
+  if (!chs[ch]) return ctx.answerCbQuery('Not found');
+  const next = cycle(chs[ch].tracking?.periodic);
+  if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+  chs[ch].tracking.periodic = next;
+  saveChannels(chs);
+  updateTrackingPeriodicStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next);
+  await ctx.answerCbQuery(`Updates: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
     ...manageKb(ch, chs[ch])
@@ -447,7 +500,7 @@ async function processTrackingFinal(ctx, s) {
   const chs = loadChannels();
   const entry = { mode: s.mode, targets: s.targets || [s.target].filter(Boolean), active: true };
   if (s.tracking) {
-    entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: s.interval };
+    entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: s.interval, xAlerts: 'on', periodic: 'on' };
   }
   chs[s.link] = entry;
   saveChannels(chs);
@@ -460,6 +513,7 @@ async function processTrackingFinal(ctx, s) {
       `Mode: ${entry.mode === 'extract' ? '📋 Extract' : '📨 Forward'}`,
       `Targets: ${entry.targets.join(', ')}`,
       entry.tracking ? `Tracking: 📊 ON (${entry.tracking.multipliers.join('X/')}X, ${entry.tracking.interval / 3600}h)` : 'Tracking: ❌ OFF',
+      entry.tracking ? `X Alerts: ${stLabel(entry.tracking.xAlerts)}  ·  🔄 Update: ${stLabel(entry.tracking.periodic)}` : '',
       '━━━━━━━━━━━━━━━━━━━━'
     ].join('\n');
     await ctx.reply(sum, {
@@ -553,6 +607,8 @@ bot.command('track', (ctx) => {
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   if (action === 'on') {
     chs[channel].tracking = chs[channel].tracking || { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
+    if (!chs[channel].tracking.xAlerts) chs[channel].tracking.xAlerts = 'on';
+    if (!chs[channel].tracking.periodic) chs[channel].tracking.periodic = 'on';
     chs[channel].tracking.enabled = true;
   } else if (action === 'off') {
     if (chs[channel].tracking) chs[channel].tracking.enabled = false;
@@ -576,7 +632,7 @@ bot.command('track_set', (ctx) => {
   if (!multipliers.length || isNaN(interval) || interval < 60) {
     return ctx.reply('⚠️ Invalid multipliers or interval (min 60s).');
   }
-  chs[channel].tracking = { enabled: true, multipliers, interval };
+  chs[channel].tracking = { enabled: true, multipliers, interval, xAlerts: 'on', periodic: 'on' };
   saveChannels(chs);
   ctx.reply(`📊 Tracking for ${channel}: ${multipliers.join('X, ')}X, ${interval}s interval.`);
 });

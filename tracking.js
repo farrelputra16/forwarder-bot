@@ -29,7 +29,7 @@ export function initTrackings() {
   if (Object.keys(trackings).length) startChecker();
 }
 
-export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, multipliers, alertInterval, periodic }) {
+export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, multipliers, alertInterval, periodic, xAlerts }) {
   const key = `${chain}_${ca}`;
   if (trackings[key]) return;
   trackings[key] = {
@@ -41,6 +41,7 @@ export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, targ
     lastUpdate: Date.now(),
     createdAt: Date.now(),
     periodic: periodic || 'on',
+    xAlerts: xAlerts || 'on',
   };
   save();
   startChecker();
@@ -78,12 +79,13 @@ async function checkAll() {
       const changeStr = mult >= 2 ? `${mult.toFixed(1)}X` : `${pct > 0 ? '+' : ''}${pct.toFixed(0)}%`;
 
       // multiplier alerts
-      for (let i = t.lastAlertIdx + 1; i < t.multipliers.length; i++) {
-        const threshold = t.multipliers[i];
-        if (mult >= threshold) {
-          const mc = flatMC(dexInfo.marketCap);
-          const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
-          const msg =
+      if (t.xAlerts !== 'paused' && t.xAlerts !== 'off') {
+        for (let i = t.lastAlertIdx + 1; i < t.multipliers.length; i++) {
+          const threshold = t.multipliers[i];
+          if (mult >= threshold) {
+            const mc = flatMC(dexInfo.marketCap);
+            const label = t.symbol || t.ca.slice(0, 6) + '...' + t.ca.slice(-4);
+            const msg =
 `🚀 ${threshold}X MULTIPLIER 🚀
 ━━━━━━━━━━━━━━━━━━━━
 ${label}
@@ -91,8 +93,9 @@ ${label}
 
 ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
-          await forwardMessage(t.target, msg, 'html');
-          t.lastAlertIdx = i;
+            await forwardMessage(t.target, msg, 'html');
+            t.lastAlertIdx = i;
+          }
         }
       }
 
@@ -127,6 +130,18 @@ export function updateTrackingPeriodicStatus(targetList, status) {
   for (const t of Object.values(trackings)) {
     if (targetList.includes(t.target)) {
       t.periodic = status;
+      changed = true;
+    }
+  }
+  if (changed) save();
+}
+
+export function updateTrackingXStatus(targetList, status) {
+  load();
+  let changed = false;
+  for (const t of Object.values(trackings)) {
+    if (targetList.includes(t.target)) {
+      t.xAlerts = status;
       changed = true;
     }
   }

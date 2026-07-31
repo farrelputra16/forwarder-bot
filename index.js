@@ -75,6 +75,7 @@ onMessage(async (sourceChannel, message) => {
                 multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
                 alertInterval: (channelInfo.tracking.interval || 3600),
                 periodic: channelInfo.tracking.periodic || 'on',
+                xAlerts: channelInfo.tracking.xAlerts || 'on',
             });
             }
         }
