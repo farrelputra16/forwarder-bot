@@ -660,3 +660,13 @@ bot.command('refresh', async (ctx) => {
   const summary = formatTokenSummary(info);
   ctx.reply(summary || '⚠️ No data found.', { parse_mode: 'Markdown' });
 });
+
+// ── Global Error Handler ─────────────────────────────────────────
+// Swallows harmless "message is not modified" errors (e.g. tapping a
+// button that produces identical content), logs nothing else.
+
+bot.catch((err, ctx) => {
+  const msg = err?.message || String(err);
+  if (msg.toLowerCase().includes('message is not modified')) return;
+  console.error(`[bot] error on ${ctx?.updateType ?? 'unknown'}:`, msg);
+});
