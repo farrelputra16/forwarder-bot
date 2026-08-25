@@ -22,12 +22,26 @@
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 html{font-size:14px;-webkit-font-smoothing:antialiased}
-body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:radial-gradient(ellipse at 50% -10%,rgba(108,92,231,.09),transparent 55%),var(--bg);color:var(--text);min-height:100dvh}
+body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100dvh}
 ::selection{background:var(--accent);color:#fff}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 input,select{font-family:inherit;color:var(--text)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* ── App background (dp.jpg) ── */
+.bg-art{position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    linear-gradient(180deg,rgba(6,7,13,.62) 0%,rgba(6,7,13,.88) 55%,rgba(6,7,13,.96) 100%),
+    radial-gradient(ellipse at 50% -10%,rgba(108,92,231,.14),transparent 55%),
+    url('/dp.jpg') center/cover no-repeat fixed;
+  transition:opacity .6s var(--spring)}
+.logo-img{width:1.95rem;height:1.95rem;border-radius:10px;object-fit:cover;box-shadow:0 3px 16px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.08)}
+.av-img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+
+/* ── Entrance animations (staggered via --i) ── */
+@keyframes riseIn{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:none}}
+.stat,.chan{animation:riseIn .55s cubic-bezier(.22,1,.36,1) both;animation-delay:calc(var(--i,0)*45ms)}
 
 /* ── Header ── */
 header{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:.75rem;padding:.85rem 1.5rem;background:rgba(6,7,13,.82);backdrop-filter:blur(24px);border-bottom:1px solid var(--border)}
@@ -44,8 +58,8 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 
 /* ── Stats ── */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.6rem;margin-bottom:1.25rem}
-.stat{background:linear-gradient(160deg,rgba(255,255,255,.03),transparent),var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem 1rem;transition:border-color .3s var(--spring)}
-.stat:hover{border-color:var(--border-hover)}
+.stat{background:linear-gradient(160deg,rgba(255,255,255,.03),transparent),var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem 1rem;transition:border-color .3s var(--spring),transform .25s var(--spring)}
+.stat:hover{border-color:var(--border-hover);transform:translateY(-2px)}
 .stat .n{font-size:1.45rem;font-weight:800;letter-spacing:-.03em}
 .stat .l{font-size:.62rem;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-top:.15rem}
 
@@ -71,8 +85,8 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
 
 /* ── Channel card ── */
-.chan{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem .95rem;transition:all .25s var(--spring)}
-.chan:hover{border-color:var(--border-hover)}
+.chan{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem .95rem;transition:border-color .25s var(--spring),opacity .3s,transform .25s var(--spring)}
+.chan:hover{border-color:var(--border-hover);transform:translateY(-1px)}
 .chan.paused{opacity:.55}
 .chan-top{display:flex;align-items:flex-start;gap:.6rem;margin-bottom:.55rem}
 .chan-av{width:2.3rem;height:2.3rem;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1rem;color:#fff;background:linear-gradient(135deg,var(--accent),#8b5cf6)}
@@ -191,6 +205,8 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 </head>
 <body>
 
+<div class="bg-art"></div>
+
 <div class="lock" id="lock">
   <div style="font-size:2.4rem">🔐</div>
   <h1 style="font-size:1.1rem;font-weight:800">Forwarder Bot</h1>
@@ -201,7 +217,7 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 </div>
 
 <header>
-  <div class="logo"><span class="dot">📨</span> Forwarder Bot</div>
+  <div class="logo"><img src="/dp.jpg" alt="" class="logo-img" onerror="this.outerHTML='<span class=&quot;dot&quot;>📨</span>'"> Forwarder Bot</div>
   <div class="spacer"></div>
   <span class="pill off" id="conn-pill"><span class="pulse"></span> Checking…</span>
   <button class="btn btn-g btn-sm" onclick="refreshAll()" title="Refresh">↻</button>
@@ -269,7 +285,7 @@ async function refreshAll(){try{
   const s=st.stats;
   $('#stats').innerHTML=[
     ['📡',s.total,'Sources'],['🟢',s.active,'Active'],['📋',s.extract,'Extract'],['📨',s.forward,'Forward'],['📊',s.tracking,'Tracking']
-  ].map(([i,n,l])=>`<div class="stat"><div class="n">${n}</div><div class="l">${i} ${l}</div></div>`).join('');
+  ].map(([i,n,l],ix)=>`<div class="stat" style="--i:${ix}"><div class="n">${n}</div><div class="l">${i} ${l}</div></div>`).join('');
   await Promise.all([renderChans(),renderActs()]);
 }catch(e){console.error(e)}}
 
@@ -278,14 +294,14 @@ async function renderChans(){
   $('#chan-count').textContent=chans.length+' channel'+(chans.length!==1?'s':'');
   const el=$('#chans');
   if(!chans.length){el.innerHTML=`<div class="empty"><div class="ico">📭</div><p>No channels yet.<br>Add a source and pick targets your account can access.</p><button class="btn btn-p" style="margin-top:.8rem" onclick="openWizard()">＋ Add Your First Channel</button></div>`;return}
-  el.innerHTML=chans.map(c=>{
+  el.innerHTML=chans.map((c,ix)=>{
     const mode=c.mode==='extract'
       ?'<span class="badge b-cyan">📋 Extract CA</span>'
       :'<span class="badge b-purple">📨 Forward All</span>';
     const trk=c.tracking&&c.tracking.enabled?`<span class="badge b-green">📊 ${c.tracking.multipliers.join('/')}X · ${c.tracking.intervalHours}h</span>`:'';
-    return`<div class="chan ${c.active?'':'paused'}" data-src="${esc(c.source)}">
+    return`<div class="chan ${c.active?'':'paused'}" style="--i:${ix}" data-src="${esc(c.source)}">
       <div class="chan-top">
-        <div class="chan-av">${esc(av(c.source))}</div>
+        <div class="chan-av" data-photo="${esc(c.source)}">${esc(av(c.source))}</div>
         <div class="chan-name"><b>${esc(c.source)}</b><span>${esc(c.source)}</span></div>
         <div class="chan-actions">
           <button class="icon-btn danger" title="Delete" onclick="delChan('${esc(c.source)}')">🗑</button>
@@ -304,6 +320,31 @@ async function renderChans(){
         ${trk||''}
       </div>
     </div>`}).join('');
+  hydratePhotos(el);
+}
+
+// ── Telegram profile photos ──
+const PHOTOS=new Map();
+let _photoInFlight=0;
+async function loadPhoto(id){
+  if(PHOTOS.has(id))return PHOTOS.get(id);
+  while(_photoInFlight>=3)await new Promise(r=>setTimeout(r,150)); // gentle on Telegram
+  _photoInFlight++;
+  try{
+    const d=await api('/photo?id='+encodeURIComponent(id));
+    const v=d.ok&&d.data?('data:image/jpeg;base64,'+d.data):'';
+    PHOTOS.set(id,v);
+    return v;
+  }catch{return ''}
+  finally{_photoInFlight--}
+}
+function hydratePhotos(scope){
+  (scope||document).querySelectorAll('[data-photo]').forEach(async el=>{
+    if(!el.dataset.photo||el.dataset.pdone)return;
+    el.dataset.pdone='1';
+    const img=await loadPhoto(el.dataset.photo);
+    if(img&&el.isConnected)el.innerHTML=`<img class="av-img" src="${img}" alt="">`;
+  });
 }
 
 const ACT_ICO={forward:'📨',ca:'⚡',channel:'📡'};
@@ -329,7 +370,7 @@ function pickerRows(list,{selected=[],disabled=[],single=false}={}){
     const sel=selected.includes(d.identifier);
     const dis=!sel&&disabled.includes(d.identifier);
     return`<div class="prow ${sel?'sel':''} ${dis?'dis':''}" data-id="${esc(d.identifier)}" data-type="${d.type}" ${dis?'':`onclick="pickRow(this)"`}>
-      <div class="pav">${esc(av(d.title))}</div>
+      <div class="pav" data-photo="${esc(d.identifier)}">${esc(av(d.title))}</div>
       <div class="pin"><b>${esc(d.title)}</b><small>${d.username?'@'+esc(d.username):'private · '+esc(d.id)}${d.participants?' · '+d.participants:''}</small></div>
       <span class="badge ${d.type==='group'?'b-green':'b-purple'}" style="font-size:.53rem">${d.type==='group'?'👥':'📢'}</span>
       <input type="${single?'radio':'checkbox'}" class="check" ${sel?'checked':''} tabindex="-1" onclick="event.stopPropagation()">
@@ -495,9 +536,9 @@ function injectFooter(step){
 }
 // Bind step renderers so each also refreshes its footer
 const _origSteps={s1:wzStep1,s2:wzStep2,s3:wzStep3,s4:wzStep4};
-window.wzStep1=function(){_origSteps.s1();injectFooter(1)};
+window.wzStep1=function(){_origSteps.s1();injectFooter(1);hydratePhotos($('#list1'))};
 window.wzStep2=function(){_origSteps.s2();injectFooter(2)};
-window.wzStep3=function(){_origSteps.s3();injectFooter(3)};
+window.wzStep3=function(){_origSteps.s3();injectFooter(3);hydratePhotos($('#list3'))};
 window.wzStep4=function(){_origSteps.s4();injectFooter(4)};
 window.wzNext1=wzNext1;
 
@@ -522,6 +563,7 @@ function renderAddTarget(src){
       <div class="picker" id="at-list">${pickerRows(list,{})}</div>`
     :`<div class="empty" style="padding:1rem"><div class="ico">🔌</div><p>${esc((DIALOGS&&DIALOGS.error)||'Cannot browse channels')} — paste a link above instead.</p></div>`}
     <div class="modal-f" style="padding:1rem 0 0"><button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" id="at-go" disabled>Add Target</button></div>`;
+  hydratePhotos($('#at-list'));
   let picked=null;
   document.querySelectorAll('#at-list .prow').forEach(r=>r.addEventListener('click',()=>{
     picked=r.dataset.id;

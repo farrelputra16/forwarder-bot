@@ -99,6 +99,12 @@ test('web: status, dialogs degrade gracefully + accessible-only validation enfor
     r = await fetch(base + '/api/activity');
     assert.equal(r.status, 200);
 
+    // photo endpoint degrades gracefully while Telegram is down
+    r = await fetch(base + '/api/photo?id=@whatever');
+    d = await r.json();
+    assert.equal(r.status, 200);
+    assert.equal(d.ok, false);
+
     r = await fetch(base + '/');
     const html = await r.text();
     assert.ok(html.includes('Forwarder Bot'));

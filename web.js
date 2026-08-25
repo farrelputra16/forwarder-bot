@@ -9,6 +9,7 @@ import {
   removeChannelListener,
   ensureAccessible,
   invalidateDialogsCache,
+  getChannelPhotoBase64,
 } from './scraper.js';
 import { loadChannels, saveChannels, channelTargets, logActivity, getActivity } from './store.js';
 import { getActiveCount } from './tracking.js';
@@ -81,6 +82,18 @@ export function startWebServer() {
   });
 
   app.get('/api/activity', (req, res) => res.json(getActivity()));
+
+  // Profile photo per channel (base64 JSON so the auth header still applies)
+  app.get('/api/photo', async (req, res) => {
+    const id = String(req.query.id || '');
+    if (!id) return res.status(400).json({ error: 'id required' });
+    try {
+      const data = await getChannelPhotoBase64(id);
+      res.json({ ok: true, data }); // data may be '' when the channel has no photo
+    } catch (e) {
+      res.json({ ok: false, error: e.message });
+    }
+  });
 
   // ── Add channel: source + targets must be ACCESSIBLE (dialog list OR live
   //    resolve/join — so pasted @usernames / t.me links / +invites work too) ──

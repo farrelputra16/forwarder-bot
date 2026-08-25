@@ -2,3 +2,4 @@ node_modules/
 .env
 channels.json
 tracking.json
+photo_cache/

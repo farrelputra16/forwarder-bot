@@ -3,6 +3,8 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import { config } from './config.js';
 import { loadChannels } from './store.js';
+import fs from 'fs';
+import crypto from 'crypto';
 
 let client = null;
 let forwardHandler = null;
@@ -443,6 +445,39 @@ export async function ensureAccessible(identifier) {
 
 function normalizeInput(s) {
   return String(s).replace(/^https?:\/\/[^\s/]*\.?(telegram\.me|t\.me)\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '');
+}
+
+// ── Channel profile photos (web avatars) ─────────────────────────
+// Disk-cached 24h so the dashboard never hammers Telegram for repeats.
+const PHOTO_DIR = './photo_cache';
+const PHOTO_TTL = 24 * 3600 * 1000;
+
+export async function getChannelPhotoBase64(identifier) {
+  const id = String(identifier || '').trim();
+  if (!id) throw new Error('identifier required');
+  const safe = crypto.createHash('md5').update(id).digest('hex');
+  const file = `${PHOTO_DIR}/${safe}.jpg`;
+
+  try {
+    const st = fs.statSync(file);
+    if (Date.now() - st.mtimeMs < PHOTO_TTL) return fs.readFileSync(file).toString('base64');
+  } catch { /* cache miss */ }
+
+  if (!client || !client.connected) throw new Error('Telegram not connected');
+  let entity;
+  try {
+    entity = await client.getEntity(await resolveTarget(id));
+  } catch (e) {
+    throw new Error(`Cannot resolve "${id}": ${e.message}`);
+  }
+  let buf = null;
+  try { buf = await client.downloadProfilePhoto(entity); } catch { buf = null; }
+  if (!buf || !buf.length) return ''; // channel has no photo — empty string is a valid "none"
+  try {
+    fs.mkdirSync(PHOTO_DIR, { recursive: true });
+    fs.writeFileSync(file, buf);
+  } catch {}
+  return buf.toString('base64');
 }
 
 // Resolve a marked numeric ID ("-100…") to a sendable entity. Cached.
