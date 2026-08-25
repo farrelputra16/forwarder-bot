@@ -158,9 +158,11 @@ export async function fetchDexScreenerInfo(ca) {
   return promise;
 }
 
-async function _fetchDexScreener(ca) {
+async function _fetchDexScreener(ca, attempt = 0) {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${ca}`);
+    // Rate-limited / transient server errors → retry with backoff instead of giving up
+    if (!res.ok) throw Object.assign(new Error(`dexscreener HTTP ${res.status}`), { retryable: res.status === 429 || res.status >= 500 });
     const data = await res.json();
     if (!data.pairs?.length) return null;
     const pair = data.pairs.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase())
@@ -184,7 +186,12 @@ async function _fetchDexScreener(ca) {
       imageUrl: pair.info?.imageUrl || '',
       socials: pair.info?.socials || [],
     };
-  } catch {
+  } catch (e) {
+    if (attempt < 2 && e.retryable !== false) {
+      await new Promise(r => setTimeout(r, 700 * (attempt + 1)));
+      return _fetchDexScreener(ca, attempt + 1);
+    }
+    console.error(`[DexScreener] failed for ${ca}: ${e.message}`);
     return null;
   }
 }

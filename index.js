@@ -52,39 +52,47 @@ onMessage(async (sourceChannel, message) => {
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
       await sendAll(targets, msg1, 'html');
 
+      // The detail card ALWAYS goes out — rich data when DexScreener responds,
+      // a graceful fallback card when it doesn't. Never silently skipped.
       const dexInfo = await fetchDexScreenerInfo(ca);
-      if (dexInfo) {
-        const mc = fmt(dexInfo.marketCap || 0);
+      const price = dexInfo ? parseFloat(dexInfo.price) : 0;
+      let msg2;
+      let mc = '?';
+      if (dexInfo && price > 0) {
+        mc = fmt(dexInfo.marketCap || 0);
         const chg = dexInfo.priceChange1h !== undefined
           ? (dexInfo.priceChange1h > 0 ? `📈 +${dexInfo.priceChange1h.toFixed(1)}%` : `📉 ${dexInfo.priceChange1h.toFixed(1)}%`)
           : '';
-        const msg2 = `⚡ Called ${mc}\n\n` +
-                     `🪙 $${dexInfo.symbol || '?'} — ${dexInfo.name || '?'}\n` +
-                     `⛓️ ${(dexInfo.chain || '?').toUpperCase()} · ${dexInfo.dexId || '?'}\n` +
-                     `💵 $${dexInfo.price || '?'}  ${chg}\n` +
-                     `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
-                     `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
-                     `🧠 0 Smart Money  ·  🏆 0 KOL`;
-        await sendAll(targets, msg2, 'html');
-        logActivity('ca', `⚡ $${dexInfo.symbol || ca.slice(0, 6)} (${mc}) ${sourceChannel} → ${targets[0]}`);
+        msg2 = `⚡ Called ${mc}\n\n` +
+               `🪙 $${dexInfo.symbol || '?'} — ${dexInfo.name || '?'}\n` +
+               `⛓️ ${(dexInfo.chain || '?').toUpperCase()} · ${dexInfo.dexId || '?'}\n` +
+               `💵 $${dexInfo.price || '?'}  ${chg}\n` +
+               `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
+               `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
+               `🧠 0 Smart Money  ·  🏆 0 KOL`;
+      } else {
+        const sym = (dexInfo && dexInfo.symbol) || ca.slice(0, 4).toUpperCase();
+        msg2 = `⚡ Called\n\n` +
+               `🪙 $${sym}\n<code>${ca}</code>\n` +
+               `⚠️ Market data unavailable — will not track this call`;
+        logActivity('error', `⚠️ DexScreener no data for $${sym} (${ca.slice(0, 6)}…)`);
+      }
+      await sendAll(targets, msg2, 'html');
+      logActivity('ca', `⚡ $${(dexInfo && dexInfo.symbol) || ca.slice(0, 6)} (${mc}) ${sourceChannel} → ${targets[0]}`);
 
-        if (channelInfo.tracking?.enabled && dexInfo) {
-            const price = parseFloat(dexInfo.price);
-            if (price > 0) {
-            addTracking({
-                ca,
-                chain: dexInfo.chain || 'sol',
-                calledAtPrice: price,
-                calledAtMC: mc,
-                symbol: dexInfo.symbol || ca.slice(0, 6),
-                target: targets[0],
-                multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
-                alertInterval: (channelInfo.tracking.interval || 3600),
-                periodic: channelInfo.tracking.periodic || 'on',
-                xAlerts: channelInfo.tracking.xAlerts || 'on',
-            });
-            }
-        }
+      if (channelInfo.tracking?.enabled && price > 0) {
+        addTracking({
+            ca,
+            chain: dexInfo.chain || 'sol',
+            calledAtPrice: price,
+            calledAtMC: mc,
+            symbol: dexInfo.symbol || ca.slice(0, 6),
+            target: targets[0],
+            multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
+            alertInterval: (channelInfo.tracking.interval || 3600),
+            periodic: channelInfo.tracking.periodic || 'on',
+            xAlerts: channelInfo.tracking.xAlerts || 'on',
+        });
       }
     }
   }
