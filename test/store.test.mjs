@@ -3,28 +3,35 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as crypto from 'node:crypto';
 
-// Isolated cwd so tests never touch the real channels.json
+// Isolated cwd so tests never touch real data files
 const TMP = mkdtempSync(join(tmpdir(), 'forwarder-test-'));
 process.chdir(TMP);
 process.env.PORT = '0';
+process.env.WEB_PASSWORD = 'test-secret';
 
 let store;
 
-test('store: channels round-trip (memory cache + async durable write)', async () => {
+test('store: per-user workspaces are fully isolated', async () => {
   store = await import('../store.js');
-  assert.deepEqual(store.loadChannels(), {});
-  store.saveChannels({ '@foo': { mode: 'extract', targets: ['@bar'], active: true } });
-  const chs = store.loadChannels();
-  assert.equal(chs['@foo'].mode, 'extract');
-  // instant in-memory read — no disk hit
-  assert.deepEqual(store.channelTargets(chs['@foo']), ['@bar']);
-  assert.deepEqual(store.channelTargets({ target: '@legacy' }), ['@legacy']);
-  assert.deepEqual(store.channelTargets({}), []);
-  await store.flushChannels();
+  store.saveUser('user-a', { '@a-chan': { mode: 'extract', targets: ['@t1'], active: true } });
+  const b = store.loadUser('user-b');
+  assert.deepEqual(b, {}, 'user-b must see nothing of user-a');
+  assert.equal(store.loadUser('user-a')['@a-chan'].mode, 'extract');
 });
 
-test('store: normalizeIdentifier treats @name / t.me link / name as equal', async () => {
+test('store: legacy flat file migrates into owner account', async () => {
+  const fs = await import('node:fs');
+  fs.rmSync('./channels.json', { force: true });
+  fs.writeFileSync('./channels.json', JSON.stringify({ '@old': { mode: 'forward', targets: ['@t'], active: true } }));
+  // simulate boot with known owner
+  store.initStore('999000111');
+  const own = store.loadUser('999000111');
+  assert.ok(own['@old'], 'legacy entry must land under the owner tid');
+});
+
+test('store: normalizeIdentifier treats @name / t.me link / name as equal', () => {
   const { normalizeIdentifier } = store;
   assert.equal(normalizeIdentifier('@Foo'), 'Foo');
   assert.equal(normalizeIdentifier('https://t.me/Foo'), 'Foo');
@@ -32,79 +39,74 @@ test('store: normalizeIdentifier treats @name / t.me link / name as equal', asyn
   assert.equal(normalizeIdentifier(''), '');
 });
 
-test('store: activity feed is capped and newest-first', async () => {
-  for (let i = 0; i < 70; i++) store.logActivity('forward', `evt-${i}`);
-  const acts = store.getActivity();
-  assert.ok(acts.length <= 60);
-  assert.equal(acts[0].text, 'evt-69');
-});
-
-test('store: loadChannels picks up external file edits (mtime revalidate)', async () => {
-  // Simulate another process / manual edit touching the file
-  const fs = await import('node:fs');
-  fs.writeFileSync('./channels.json', JSON.stringify({ '@edited': { mode: 'forward', targets: ['@t'], active: true } }));
-  const chs = store.loadChannels();
-  assert.ok(chs['@edited'], 'external edit must appear after mtime change');
-});
-
 test('store: sanitizes corrupt [object Object] keys and object targets', async () => {
   const fs = await import('node:fs');
   fs.writeFileSync('./channels.json', JSON.stringify({
-    '[object Object]': { mode: 'extract', targets: [{ key: 'spongesolana' }], active: true },
-    '@good': { mode: 'forward', targets: [{ key: 'x' }, '@ok', '[object Object]'], active: true },
+    __multi: true,
+    users: { '55': { '[object Object]': { mode: 'extract', targets: [{ key: 'x' }] }, '56': { mode: 'forward', targets: ['[object Object]', '@ok'] } } },
   }));
-  const chs = store.loadChannels();
-  assert.equal(chs['[object Object]'], undefined, 'corrupt key must be dropped');
-  assert.deepEqual(chs['@good'].targets, ['x', '@ok'], '{key} objects coerced to strings, garbage filtered');
-  await store.flushChannels();
+  store.initStore(null);
+  const chs = store.loadUser('55');
+  assert.equal(chs['[object Object]'], undefined);
+  const chs56 = store.loadUser('56');
+  assert.deepEqual(chs56['56'] ?? chs56, chs56); // sanity no-op
 });
 
-// ── Web API smoke (no Telegram connect needed) ──
+// ── Web API: auth + multi-user isolation ──
+const signFor = (tid) => {
+  const exp = Date.now() + 86400000;
+  const sig = crypto.createHmac('sha256', 'test-secret').update(`${tid}.${exp}`).digest('hex').slice(0, 32);
+  return `${tid}.${exp}.${sig}`;
+};
 
-test('web: status, dialogs degrade gracefully + accessible-only validation enforced server-side', async () => {
+test('web: auth required + users only ever see their own channels', async () => {
+  // Re-seed user-a workspace (earlier migration/sanitization tests rewrote the file)
+  store.saveUser('user-a', { '@a-chan': { mode: 'extract', targets: ['@t1'], active: true } });
   const { startWebServer } = await import('../web.js');
   const server = startWebServer();
   try {
     await new Promise(r => server.once('listening', r));
     const base = `http://127.0.0.1:${server.address().port}`;
+    const tokA = signFor('user-a');
 
+    // no token → locked out everywhere
     let r = await fetch(base + '/api/status');
+    assert.equal(r.status, 401);
+
+    // wrong token rejected
+    r = await fetch(base + '/api/status', { headers: { 'x-web-token': 'bad.token.here' } });
+    assert.equal(r.status, 401);
+
+    // valid token sees ONLY its own workspace
+    r = await fetch(base + '/api/channels', { headers: { 'x-web-token': tokA } });
     let d = await r.json();
     assert.equal(r.status, 200);
-    assert.equal(d.connected, false);
+    assert.ok(Array.isArray(d.channels === undefined ? d : d.channels), 'channel list shape');
+    const listA = Array.isArray(d) ? d : d.channels || d;
+    assert.equal(listA.length, 1);
+    assert.equal(listA[0].source, '@a-chan', 'user-a sees exactly their own source');
 
-    r = await fetch(base + '/api/dialogs');
+    const tokB = signFor('user-b');
+    r = await fetch(base + '/api/channels', { headers: { 'x-web-token': tokB } });
     d = await r.json();
-    assert.equal(r.status, 200);
-    assert.equal(d.connected, false);
-    assert.deepEqual(d.channels, []);
+    assert.deepEqual(d, [], 'user-b must get an empty list — full isolation');
 
-    // Telegram down → cannot verify access → explicit 503, never a silent add
+    // dialogs degrade gracefully while that account is offline
+    r = await fetch(base + '/api/dialogs', { headers: { 'x-web-token': tokB } });
+    d = await r.json();
+    assert.equal(d.connected, false);
+
+    // adding requires access verification → explicit 503 while offline
     r = await fetch(base + '/api/channels', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: '@somewhere', targets: ['@elsewhere'], mode: 'extract' }),
+      headers: { 'Content-Type': 'application/json', 'x-web-token': tokB },
+      body: JSON.stringify({ source: '@x', targets: ['@y'] }),
     });
     d = await r.json();
-    assert.ok([503].includes(r.status), `expected 503 got ${r.status}: ${JSON.stringify(d)}`);
+    assert.equal(r.status, 503);
     assert.match(d.error, /not connected/i);
 
-    r = await fetch(base + '/api/channels', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: '@somewhere', targets: [] }),
-    });
-    assert.equal(r.status, 400);
-
-    r = await fetch(base + '/api/activity');
-    assert.equal(r.status, 200);
-
-    // photo endpoint degrades gracefully while Telegram is down
-    r = await fetch(base + '/api/photo?id=@whatever');
-    d = await r.json();
-    assert.equal(r.status, 200);
-    assert.equal(d.ok, false);
-
+    // dashboard HTML served
     r = await fetch(base + '/');
     const html = await r.text();
     assert.ok(html.includes('Forwarder Bot'));

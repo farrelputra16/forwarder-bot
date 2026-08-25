@@ -29,12 +29,13 @@ export function initTrackings() {
   if (Object.keys(trackings).length) startChecker();
 }
 
-export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, multipliers, alertInterval, periodic, xAlerts }) {
+export function addTracking({ ca, chain, calledAtPrice, calledAtMC, symbol, target, owner, multipliers, alertInterval, periodic, xAlerts }) {
   const key = `${chain}_${ca}`;
   if (trackings[key]) return;
   trackings[key] = {
     ca, chain, calledAtPrice, calledAtMC, symbol,
     target,
+    owner: owner ? String(owner) : '',
     multipliers: multipliers || [2, 3, 5, 10],
     alertInterval: (alertInterval || 3600) * 1000,
     lastAlertIdx: -1,
@@ -93,7 +94,7 @@ ${label}
 
 ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
-            await forwardMessage(t.target, msg, 'html');
+            await forwardMessage(t.target, msg, 'html', t.owner || undefined);
             t.lastAlertIdx = i;
           }
         }
@@ -113,7 +114,7 @@ ${label}
 
 ${t.ca}
 ━━━━━━━━━━━━━━━━━━━━`;
-          await forwardMessage(t.target, msg, 'html');
+          await forwardMessage(t.target, msg, 'html', t.owner || undefined);
           t.lastUpdate = Date.now();
         }
       }
@@ -124,11 +125,11 @@ ${t.ca}
   save();
 }
 
-export function updateTrackingPeriodicStatus(targetList, status) {
+export function updateTrackingPeriodicStatus(targetList, status, owner) {
   load();
   let changed = false;
   for (const t of Object.values(trackings)) {
-    if (targetList.includes(t.target)) {
+    if (targetList.includes(t.target) && (!owner || !t.owner || t.owner === String(owner))) {
       t.periodic = status;
       changed = true;
     }
@@ -136,11 +137,11 @@ export function updateTrackingPeriodicStatus(targetList, status) {
   if (changed) save();
 }
 
-export function updateTrackingXStatus(targetList, status) {
+export function updateTrackingXStatus(targetList, status, owner) {
   load();
   let changed = false;
   for (const t of Object.values(trackings)) {
-    if (targetList.includes(t.target)) {
+    if (targetList.includes(t.target) && (!owner || !t.owner || t.owner === String(owner))) {
       t.xAlerts = status;
       changed = true;
     }

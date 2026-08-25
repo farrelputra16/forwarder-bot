@@ -2,7 +2,7 @@ import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import { config } from './config.js';
-import { loadChannels } from './store.js';
+import { loadUser } from './store.js';
 import fs from 'fs';
 import crypto from 'crypto';
 
@@ -320,67 +320,124 @@ export function formatTokenSummary(data) {
   return lines.join('\n');
 }
 
-// ── Telegram Client ─────────────────────────────────────────────
+// ── Multi-user Telegram clients ─────────────────────────────────
+// Each logged-in account (own API ID/Hash + session) gets an isolated client,
+// listener set and caches. Data isolation is enforced by scoping every store
+// call to the account's telegram id.
 
-export async function initScraper(sessionStr) {
-  const { apiId, apiHash } = config.telegram;
-  const stringSession = new StringSession(sessionStr || '');
-  const prev = client;
-  client = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
-  if (prev) { try { await prev.disconnect(); } catch {} }
-  await client.connect();
-  _listeners.clear();
-  _peerCache.clear();
-  invalidateDialogsCache();
-  console.log('[Scraper] Connected');
-  return client;
+const _clients = new Map(); // tid → state
+
+function makeState(tid) {
+  return {
+    tid,
+    client: null,
+    apiId: 0,
+    apiHash: '',
+    sessionStr: '',
+    dcId: 0,
+    listeners: new Map(),   // entityIdStr → { handler, builder }
+    peerCache: new Map(),   // markedId → entity
+    dialogs: { data: null, ts: 0 },
+    pingFails: 0,
+    busy: false,
+  };
 }
 
-// ── Keep-alive watchdog: never let the scraper go silently dead ──
+let _bootOwner = null; // first connected account (env/boot session) — legacy & bot scope
+export function getBootOwnerTid() { return _bootOwner; }
+
+// Strict — only the exact user's state (web routes use this via tid param).
+export function getStateExact(tid) {
+  return tid ? (_clients.get(String(tid)) || null) : null;
+}
+// Graceful fallback keeps single-account flows (bot commands) working:
+// explicit tid → boot owner → the only connected client → null.
+function getState(tid) {
+  const id = tid ? String(tid) : null;
+  if (id) return _clients.get(id) || null;
+  if (_bootOwner && _clients.has(_bootOwner)) return _clients.get(_bootOwner);
+  if (_clients.size === 1) return [..._clients.values()][0];
+  return null;
+}
+export function listClients() { return [..._clients.values()]; }
+
+export async function initScraper(sessionStr, opts = {}) {
+  if (!sessionStr) throw new Error('No session string');
+  let stringSession;
+  try { stringSession = new StringSession(sessionStr); } catch { throw new Error('Invalid session format'); }
+  const apiId = parseInt(opts.apiId != null ? opts.apiId : config.telegram.apiId);
+  const apiHash = opts.apiHash != null ? opts.apiHash : config.telegram.apiHash;
+  const dcId = parseInt(opts.dcId) || 0;
+
+  const cOpts = { connectionRetries: 5 };
+  if (dcId > 0) cOpts.dcId = dcId;
+  const client = new TelegramClient(stringSession, apiId, apiHash, cOpts);
+  await client.connect();
+  const me = await client.getMe();
+  if (!me) { try { await client.destroy(); } catch {} throw new Error('Session expired'); }
+  const tid = String(me.id);
+
+  let st = _clients.get(tid);
+  if (!st) { st = makeState(tid); _clients.set(tid, st); }
+  if (st.client && st.client !== client) {
+    try { await st.client.disconnect(); } catch {}
+    st.listeners.clear();
+    st.peerCache.clear();
+    st.dialogs = { data: null, ts: 0 };
+  }
+  st.client = client;
+  st.apiId = apiId;
+  st.apiHash = apiHash;
+  st.sessionStr = sessionStr;
+  st.dcId = dcId;
+  if (!_bootOwner) _bootOwner = tid;
+  console.log(`[Scraper] Connected as @${me.username || tid} (${tid})`);
+  return { tid, client };
+}
+
+export function getClient(tid) {
+  return getState(tid)?.client || null;
+}
+
+export function isConnected(tid) {
+  const st = getState(tid);
+  return !!(st && st.client && st.client.connected);
+}
+
+// ── Keep-alive watchdog: never let any user's scraper go silently dead ──
 let _kaTimer = null;
-let _kaBusy = false;
-let _pingFails = 0;
 
 export function startKeepAlive() {
   if (_kaTimer) return;
   _kaTimer = setInterval(async () => {
-    if (_kaBusy || !client) return;
-    try {
-      if (!client.connected) throw new Error('disconnected');
-      const { Api } = await import('telegram');
-      await withTimeout(client.invoke(new Api.Ping({ pingId: BigInt(Date.now()) })), 10_000, 'Ping');
-      _pingFails = 0;
-    } catch {
-      if (++_pingFails < 2) return;
-      _pingFails = 0;
-      _kaBusy = true;
+    for (const st of _clients.values()) {
+      if (st.busy || !st.sessionStr) continue;
       try {
-        console.warn('[Scraper] Connection lost — reconnecting...');
-        await initScraper(config.telegram.session);
-        const chs = loadChannels();
-        for (const ch of Object.keys(chs)) await addChannelListener(ch).catch(() => {});
-        console.log(`[Scraper] ✅ Reconnected (${Object.keys(chs).length} listeners restored)`);
-      } catch (e) {
-        console.error('[Scraper] Reconnect failed:', e.message);
-      } finally {
-        _kaBusy = false;
+        if (!st.client || !st.client.connected) throw new Error('disconnected');
+        const { Api } = await import('telegram');
+        await withTimeout(st.client.invoke(new Api.Ping({ pingId: BigInt(Date.now()) })), 10_000, 'Ping');
+        st.pingFails = 0;
+      } catch {
+        if (++st.pingFails < 2) continue;
+        st.pingFails = 0;
+        st.busy = true;
+        try {
+          console.warn(`[Scraper] (${st.tid}) Connection lost — reconnecting...`);
+          await initScraper(st.sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: st.dcId });
+          const chs = loadUser(st.tid);
+          for (const src of Object.keys(chs)) await addChannelListener(src, st.tid).catch(() => {});
+          console.log(`[Scraper] (${st.tid}) ✅ Reconnected (${Object.keys(chs).length} listeners restored)`);
+        } catch (e) {
+          console.error(`[Scraper] (${st.tid}) Reconnect failed:`, e.message);
+        } finally {
+          st.busy = false;
+        }
       }
     }
   }, 30_000);
 }
 
-export function getClient() {
-  return client;
-}
-
-export function isConnected() {
-  return !!(client && client.connected);
-}
-
-// Channels & groups the connected account can actually access — the ONLY
-// valid sources/targets for forwarding (web picker is limited to these).
-// Cached for 60s so reopening the picker is instant; force=true bypasses.
-const _dialogsCache = { data: null, ts: 0 };
+// ── Accessible dialogs (per-account, cached 60s) ────────────────
 const DIALOGS_TTL = 60_000;
 const DIALOGS_TIMEOUT = 20_000;
 
@@ -391,13 +448,14 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-export async function getAccessibleChannels(force = false) {
-  if (!client) throw new Error('Telegram not connected');
+// Channels & groups THIS account can actually access — the ONLY valid
+// sources/targets for its forwards.
+export async function getAccessibleChannels(force = false, tid) {
+  const st = getState(tid);
+  if (!st || !st.client) throw new Error('Telegram not connected');
   const now = Date.now();
-  if (!force && _dialogsCache.data && now - _dialogsCache.ts < DIALOGS_TTL) {
-    return _dialogsCache.data;
-  }
-  const dialogs = await withTimeout(client.getDialogs({ limit: 100 }), DIALOGS_TIMEOUT, 'Fetching channels');
+  if (!force && st.dialogs.data && now - st.dialogs.ts < DIALOGS_TTL) return st.dialogs.data;
+  const dialogs = await withTimeout(st.client.getDialogs({ limit: 100 }), DIALOGS_TIMEOUT, 'Fetching channels');
   const channels = dialogs
     .filter(d => d.isChannel || d.isGroup)
     .map(d => {
@@ -415,17 +473,21 @@ export async function getAccessibleChannels(force = false) {
       };
     })
     .sort((a, b) => b.participants - a.participants);
-  _dialogsCache.data = channels;
-  _dialogsCache.ts = now;
+  st.dialogs.data = channels;
+  st.dialogs.ts = now;
   return channels;
 }
 
-export function invalidateDialogsCache() {
-  _dialogsCache.data = null;
-  _dialogsCache.ts = 0;
+export function invalidateDialogsCache(tid) {
+  if (tid) {
+    const st = _clients.get(String(tid));
+    if (st) st.dialogs = { data: null, ts: 0 };
+    return;
+  }
+  for (const st of _clients.values()) st.dialogs = { data: null, ts: 0 };
 }
 
-// Canonical storage key for an entity: prefer username, else marked "-100" id.
+// Canonical storage key: prefer username, else marked "-100" / "-" id.
 function canonicalIdentifier(entity) {
   if (entity?.username) return entity.username.replace(/^@/, '');
   const raw = entity?.id?.value ?? entity?.id;
@@ -435,51 +497,52 @@ function canonicalIdentifier(entity) {
   return s;
 }
 
-// Verify the account can access ANY identifier — from the dialog list first,
-// then by resolving/joining it live (covers invite links & fresh joins).
-export async function ensureAccessible(identifier) {
-  const norm = String(identifier || '').trim();
-  if (!norm) throw new Error('Empty channel identifier');
-  try {
-    const list = await getAccessibleChannels();
-    const hit = list.find(a => a.identifier.toLowerCase() === norm.toLowerCase()
-      || (a.username || '').toLowerCase() === normalizeInput(norm));
-    if (hit) return hit.identifier;
-  } catch { /* fall through to live resolve */ }
-  const entity = await resolveAndJoin(norm);
-  return canonicalIdentifier(entity);
-}
-
 function normalizeInput(s) {
   return String(s).replace(/^https?:\/\/[^\s/]*\.?(telegram\.me|t\.me)\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '');
 }
 
-// ── Channel profile photos (web avatars) ─────────────────────────
-// Disk-cached 24h so the dashboard never hammers Telegram for repeats.
+// Verify THIS account can access ANY identifier — dialog list first, then a
+// live resolve/join (covers pasted invite links & fresh joins).
+export async function ensureAccessible(identifier, tid) {
+  const norm = String(identifier || '').trim();
+  if (!norm) throw new Error('Empty channel identifier');
+  const st = getState(tid);
+  if (!st || !st.client) throw new Error('Telegram not connected');
+  try {
+    const list = await getAccessibleChannels(false, st.tid);
+    const hit = list.find(a => a.identifier.toLowerCase() === norm.toLowerCase()
+      || (a.username || '').toLowerCase() === normalizeInput(norm));
+    if (hit) return hit.identifier;
+  } catch { /* fall through to live resolve */ }
+  const entity = await resolveAndJoin(st.client, norm);
+  return canonicalIdentifier(entity);
+}
+
+// ── Channel profile photos (web avatars; disk-cached 24h) ────────
 const PHOTO_DIR = './photo_cache';
 const PHOTO_TTL = 24 * 3600 * 1000;
 
-export async function getChannelPhotoBase64(identifier) {
+export async function getChannelPhotoBase64(identifier, tid) {
   const id = String(identifier || '').trim();
   if (!id) throw new Error('identifier required');
   const safe = crypto.createHash('md5').update(id).digest('hex');
   const file = `${PHOTO_DIR}/${safe}.jpg`;
-
   try {
     const st = fs.statSync(file);
     if (Date.now() - st.mtimeMs < PHOTO_TTL) return fs.readFileSync(file).toString('base64');
   } catch { /* cache miss */ }
 
-  if (!client || !client.connected) throw new Error('Telegram not connected');
+  const pst = getState(tid);
+  if (!pst || !pst.client || !pst.client.connected) throw new Error('Telegram not connected');
   let entity;
   try {
-    entity = await client.getEntity(await resolveTarget(id));
+    entity = await pst.client.getEntity(await resolveTarget(id, tid));
   } catch (e) {
     throw new Error(`Cannot resolve "${id}": ${e.message}`);
   }
   let buf = null;
   try { buf = await client.downloadProfilePhoto(entity); } catch { buf = null; }
-  if (!buf || !buf.length) return ''; // channel has no photo — empty string is a valid "none"
+  if (!buf || !buf.length) return ''; // no photo set — '' is a valid "none"
   try {
     fs.mkdirSync(PHOTO_DIR, { recursive: true });
     fs.writeFileSync(file, buf);
@@ -487,34 +550,38 @@ export async function getChannelPhotoBase64(identifier) {
   return buf.toString('base64');
 }
 
-// Resolve a marked numeric ID ("-100…") to a sendable entity. Cached.
-const _peerCache = new Map();
-export async function resolveTarget(t) {
+// Numeric marked IDs ("-100…") resolve through that account's own session cache.
+export async function resolveTarget(t, tid) {
+  t = String(t || '').trim();
   if (!/^-?\d{6,}$/.test(t)) return t;
-  if (_peerCache.has(t)) return _peerCache.get(t);
-  if (!client) throw new Error('Telegram not connected');
+  const st = getState(tid);
+  if (!st || !st.client) throw new Error('Telegram not connected');
+  if (st.peerCache.has(t)) return st.peerCache.get(t);
   const { Api } = await import('telegram');
   let peer;
   if (t.startsWith('-100')) peer = new Api.PeerChannel({ channelId: BigInt(t.slice(4)) });
   else if (t.startsWith('-')) peer = new Api.PeerChat({ channelId: BigInt(t.slice(1)) });
   else peer = new Api.PeerChannel({ channelId: BigInt(t) });
-  const entity = await client.getEntity(peer);
-  _peerCache.set(t, entity);
+  const entity = await st.client.getEntity(peer);
+  st.peerCache.set(t, entity);
   return entity;
 }
 
 export function onMessage(cb) {
-  forwardHandler = cb;
+  forwardHandler = cb; // cb(tid, sourceChannel, message)
 }
 
-export async function resolveAndJoin(identifier) {
+export async function resolveAndJoin(client, identifier) {
   if (!client) throw new Error('Telegram not connected');
   const { Api } = await import('telegram');
 
-  // Numeric marked IDs (e.g. "-1001234567890") — private sources picked from the
-  // account's own dialog list have no username; resolve via peer constructors.
+  // Numeric marked IDs — private sources picked from the account's own dialogs.
   if (/^-?\d{6,}$/.test(identifier)) {
-    return resolveTarget(identifier);
+    let peer;
+    if (identifier.startsWith('-100')) peer = new Api.PeerChannel({ channelId: BigInt(identifier.slice(4)) });
+    else if (identifier.startsWith('-')) peer = new Api.PeerChat({ channelId: BigInt(identifier.slice(1)) });
+    else peer = new Api.PeerChannel({ channelId: BigInt(identifier) });
+    return client.getEntity(peer);
   }
 
   const inviteMatch = identifier.match(/t\.me\/(\+[\w]+)/);
@@ -525,85 +592,66 @@ export async function resolveAndJoin(identifier) {
     const cleanHash = hash.replace('+', '');
     try {
       const invite = await client.invoke(new Api.messages.CheckChatInvite({ hash: cleanHash }));
-      if (invite.chat) {
-        console.log(`[Scraper] Resolved ${identifier} via CheckChatInvite.`);
-        return invite.chat;
-      }
-    } catch (e) {
-      console.log(`[Scraper] CheckChatInvite failed, trying ImportChatInvite...`);
-    }
-
+      if (invite.chat) return invite.chat;
+    } catch { /* fall through */ }
     try {
       const imported = await client.invoke(new Api.messages.ImportChatInvite({ hash: cleanHash }));
-      if (imported.chats?.length) {
-        console.log(`[Scraper] Joined ${identifier} via invite link.`);
-        return imported.chats[0];
-      }
+      if (imported.chats?.length) return imported.chats[0];
     } catch (e) {
       if (e.errorMessage === 'USER_ALREADY_PARTICIPANT') {
         const dialogs = await client.getDialogs({ limit: 200 });
         const found = dialogs.find(d => {
           if (!d.entity) return false;
-          const title = d.entity.title || '';
-          return title === (invite?.chat?.title || '') ||
-                 d.entity.username === cleanHash;
+          return (d.entity.title || '') === (invite?.chat?.title || '') || d.entity.username === cleanHash;
         });
         if (found) return found.entity;
         throw new Error(`Already participant but cannot find "${identifier}" in dialogs`);
       }
-      console.log(`[Scraper] ImportChatInvite failed: ${e.message}`);
       throw e;
     }
   } else {
-    const username = identifier.includes('t.me/')
-      ? identifier.split('t.me/').pop()
-      : identifier;
-    try {
-      return await client.getEntity(username);
-    } catch (e) {
-      console.log(`[Scraper] getEntity failed for ${username}`);
-      throw e;
-    }
+    const username = identifier.includes('t.me/') ? identifier.split('t.me/').pop().replace(/\/$/, '') : identifier;
+    return client.getEntity(username);
   }
-
   throw new Error(`Could not resolve or join: ${identifier}`);
 }
 
-const _listeners = new Map(); // entityIdStr → { handler, builder }
+export async function addChannelListener(identifier, tid) {
+  const st = getStateExact(tid) || getState(tid);
+  if (!st || !st.client) throw new Error('Client not initialized');
 
-export async function addChannelListener(identifier) {
-  if (!client) throw new Error('Client not initialized');
-
-  const entity = await resolveAndJoin(identifier);
+  const entity = await resolveAndJoin(st.client, identifier);
 
   const handler = async (event) => {
-    if (forwardHandler) await forwardHandler(identifier, event.message);
+    if (forwardHandler) await forwardHandler(st.tid, identifier, event.message);
   };
   const builder = new NewMessage({ chats: [entity.id] });
-  client.addEventHandler(handler, builder);
-  _listeners.set(String(entity.id), { handler, builder });
+  st.client.addEventHandler(handler, builder);
+  st.listeners.set(String(entity.id), { handler, builder });
 
-  console.log(`[Scraper] Listening to ${identifier}`);
+  console.log(`[Scraper] (${st.tid}) Listening to ${identifier}`);
   return true;
 }
 
-export async function removeChannelListener(identifier) {
-  if (!client) return;
+export async function removeChannelListener(identifier, tid) {
+  const st = getState(tid);
+  if (!st || !st.client) return;
   try {
-    const entity = await resolveAndJoin(identifier);
-    const rec = _listeners.get(String(entity.id));
+    const entity = await resolveAndJoin(st.client, identifier);
+    const rec = st.listeners.get(String(entity.id));
     if (rec) {
-      client.removeEventHandler(rec.handler, rec.builder);
-      _listeners.delete(String(entity.id));
-      console.log(`[Scraper] Stopped listening to ${identifier}`);
+      st.client.removeEventHandler(rec.handler, rec.builder);
+      st.listeners.delete(String(entity.id));
+      console.log(`[Scraper] (${st.tid}) Stopped listening to ${identifier}`);
     }
   } catch { /* unresolvable — nothing registered */ }
 }
 
-export async function forwardMessage(targetChannel, text, parseMode) {
-  if (!client) throw new Error('Telegram not initialized');
-  const target = await resolveTarget(String(targetChannel));
+export async function forwardMessage(targetChannel, text, parseMode, tid) {
+  const st = getState(tid);
+  if (!st || !st.client) throw new Error('Telegram not initialized');
+  const target = await resolveTarget(String(targetChannel), st.tid);
   const opts = { message: text };
   if (parseMode) opts.parseMode = parseMode;
-  await client.sendMessage(target, opts);
+  await st.client.sendMessage(target, opts);
 }

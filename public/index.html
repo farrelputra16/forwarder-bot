@@ -208,19 +208,53 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 <div class="bg-art"></div>
 
 <div class="lock" id="lock">
-  <div style="font-size:2.4rem">🔐</div>
-  <h1 style="font-size:1.1rem;font-weight:800">Forwarder Bot</h1>
-  <p class="hint" style="text-align:center">Enter the dashboard password to continue.</p>
-  <input id="lock-pw" type="password" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()">
-  <button class="btn btn-p" onclick="doLogin()" style="width:280px;max-width:80vw">Unlock</button>
-  <p id="lock-err" class="hint" style="color:var(--red);display:none"></p>
+  <img src="/dp.jpg" alt="" style="width:3.2rem;height:3.2rem;border-radius:14px;object-fit:cover" onerror="this.style.display='none'">
+  <h1 style="font-size:1.15rem;font-weight:800">Forwarder Bot</h1>
+  <p class="hint" id="lock-sub" style="text-align:center;margin-top:-0.6rem">Login with your own Telegram account —<br>your channels stay private to you.</p>
+
+  <!-- Step 1: credentials -->
+  <div id="lg-step1" style="display:flex;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
+    <input id="lg-api-id" type="number" placeholder="API ID (my.telegram.org)" autocomplete="off">
+    <input id="lg-api-hash" placeholder="API Hash" autocomplete="off">
+    <select id="lg-dc">
+      <option value="0">DC Auto</option>
+      <option value="1">US Miami</option>
+      <option value="2">EU Amsterdam</option>
+      <option value="5">SG Singapore</option>
+    </select>
+    <input id="lg-phone" placeholder="+62… phone number" autocomplete="off">
+    <button class="btn btn-p" onclick="authStart()" id="lg-btn">Send Code</button>
+    <div id="lg-master-wrap" style="display:none;text-align:center">
+      <div style="display:flex;align-items:center;gap:.5rem;color:var(--text3);font-size:.6rem"><div style="flex:1;height:1px;background:var(--border)"></div>or<div style="flex:1;height:1px;background:var(--border)"></div></div>
+      <input id="lock-pw" type="password" placeholder="Master password" onkeydown="if(event.key==='Enter')doLogin()">
+      <button class="btn btn-g" onclick="doLogin()" style="width:100%">Unlock with password</button>
+    </div>
+  </div>
+
+  <!-- Step 2: OTP -->
+  <div id="lg-step2" style="display:none;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
+    <p class="hint" style="text-align:center">Code sent to your Telegram.<br>Check the app or SMS.</p>
+    <input id="lg-code" placeholder="Login code (12345)" onkeydown="if(event.key==='Enter')authVerify()" style="text-align:center;letter-spacing:.3em">
+    <button class="btn btn-p" onclick="authVerify()">Verify</button>
+  </div>
+
+  <!-- Step 3: 2FA -->
+  <div id="lg-step3" style="display:none;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
+    <p class="hint" style="text-align:center">☁️ Cloud password required<br>(two-factor authentication is enabled)</p>
+    <input id="lg-pass" type="password" placeholder="Cloud password" onkeydown="if(event.key==='Enter')authVerify()" style="text-align:center">
+    <button class="btn btn-p" onclick="authVerify()">Verify</button>
+  </div>
+
+  <p id="lock-err" class="hint" style="color:var(--red);display:none;text-align:center"></p>
 </div>
 
 <header>
   <div class="logo"><img src="/dp.jpg" alt="" class="logo-img" onerror="this.outerHTML='<span class=&quot;dot&quot;>📨</span>'"> Forwarder Bot</div>
   <div class="spacer"></div>
   <span class="pill off" id="conn-pill"><span class="pulse"></span> Checking…</span>
+  <span class="pill" id="user-pill" style="display:none;color:var(--text2)">👤 <b id="user-name"></b></span>
   <button class="btn btn-g btn-sm" onclick="refreshAll()" title="Refresh">↻</button>
+  <button class="btn btn-g btn-sm" onclick="doLogout()" id="logout-btn" style="display:none">Logout</button>
 </header>
 
 <main>
@@ -258,7 +292,7 @@ async function api(p,o={}){
     if(e.name==='AbortError')throw new Error('Request timed out — Telegram slow or offline. Try again or paste a link instead.');
     throw e;
   }finally{clearTimeout(to)}
-  if(r.status===401){localStorage.removeItem('fw_token');TOKEN='';$('#lock').classList.add('open');throw new Error('unauthorized')}
+  if(r.status===401){localStorage.removeItem('fw_token');TOKEN='';showLock();throw new Error('unauthorized')}
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.error||r.statusText);
   return d;
@@ -267,13 +301,59 @@ const esc=s=>s?String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 const av=t=>(t||'?').trim().charAt(0).toUpperCase()||'?';
 const ago=ts=>{const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h'};
 
-// ── Auth gate ──
-async function doLogin(){
+// ── Auth gate (per-account Telegram login) ──
+let LOGIN_TOKEN=null; // pending MTProto login token
+function lgErr(m){const e=$('#lock-err');if(!m){e.style.display='none';return}e.textContent=m;e.style.display='block'}
+function lgStep(n){['#lg-step1','#lg-step2','#lg-step3'].forEach((s,i)=>{$(s).style.display=(i+1)===n?'flex':'none'})}
+
+window.doLogin=async function(){
   try{
     const d=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#lock-pw').value})}).then(r=>r.json());
-    if(d.ok){TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);$('#lock').classList.remove('open');refreshAll()}
-    else{$('#lock-err').textContent=d.error||'Wrong password';$('#lock-err').style.display='block'}
-  }catch(e){$('#lock-err').textContent=e.message;$('#lock-err').style.display='block'}
+    if(d.ok){TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);$('#lock').classList.remove('open');bootAfterAuth()}
+    else lgErr(d.error||'Wrong password');
+  }catch(e){lgErr(e.message)}
+};
+window.authStart=async function(){
+  const btn=$('#lg-btn');btn.disabled=true;btn.textContent='Sending…';lgErr('');
+  try{
+    const d=await api('/auth/start',{method:'POST',body:JSON.stringify({
+      apiId:$('#lg-api-id').value.trim(),apiHash:$('#lg-api-hash').value.trim(),
+      phone:$('#lg-phone').value.trim(),dcId:$('#lg-dc').value,
+    })});
+    LOGIN_TOKEN=d.loginToken;
+    localStorage.setItem('fw_creds',JSON.stringify({a:$('#lg-api-id').value.trim(),h:$('#lg-api-hash').value.trim(),dc:$('#lg-dc').value,p:$('#lg-phone').value.trim()}));
+    lgStep(2);$('#lg-code').focus();
+  }catch(e){lgErr(e.message)}
+  finally{btn.disabled=false;btn.textContent='Send Code'}
+};
+window.authVerify=async function(){
+  lgErr('');
+  try{
+    const d=await api('/auth/verify',{method:'POST',body:JSON.stringify({
+      loginToken:LOGIN_TOKEN,code:$('#lg-code')?.value?.trim(),password:$('#lg-pass')?.value,
+    })});
+    if(d.twoFactor){lgStep(3);$('#lg-pass').focus();return}
+    TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);
+    $('#lock').classList.remove('open');
+    toast(`👋 Welcome @${d.username||d.tid}`,'ok');
+    bootAfterAuth();
+  }catch(e){lgErr(e.message)}
+};
+window.doLogout=function(){localStorage.removeItem('fw_token');TOKEN='';location.reload()};
+async function showLock(){
+  $('#lock').classList.add('open');
+  try{
+    const o=await fetch('/api/auth/options').then(r=>r.json());
+    $('#lg-master-wrap').style.display=o.masterPassword?'block':'none';
+  }catch{}
+  // restore saved creds for convenience
+  try{const c=JSON.parse(localStorage.getItem('fw_creds')||'{}');
+    if(c.a){$('#lg-api-id').value=c.a;$('#lg-api-hash').value=c.h;$('#lg-dc').value=c.dc||'0';$('#lg-phone').value=c.p||''}
+  }catch{}
+}
+async function bootAfterAuth(){
+  try{const me=await api('/me')}catch{}
+  refreshAll().catch(()=>{});
 }
 
 // ── Renderers ──
@@ -281,7 +361,9 @@ async function refreshAll(){try{
   const [st]=await Promise.all([api('/status')]);
   const cp=$('#conn-pill');
   cp.className='pill '+(st.connected?'on':'off');
-  cp.innerHTML=`<span class="pulse"></span> ${st.connected?'Telegram Connected':'Telegram Offline'}`;
+  cp.innerHTML=`<span class="pulse"></span> ${st.connected?'Telegram Connected':'Offline'}`;  $('#user-pill').style.display='inline-flex';
+  $('#user-name').textContent='@'+(st.user?.username||st.user?.tid||'?').replace(/^@/,'');
+  $('#logout-btn').style.display='';
   const s=st.stats;
   $('#stats').innerHTML=[
     ['📡',s.total,'Sources'],['🟢',s.active,'Active'],['📋',s.extract,'Extract'],['📨',s.forward,'Forward'],['📊',s.tracking,'Tracking']
@@ -584,7 +666,7 @@ function renderAddTarget(src){
 };
 
 // ── Boot ──
-refreshAll().catch(()=>{});
+refreshAll().catch(()=>{ if(!TOKEN) showLock(); });
 setInterval(refreshAll,5000);
 </script>
 </body>

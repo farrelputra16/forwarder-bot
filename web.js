@@ -1,6 +1,7 @@
 import express from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import * as crypto from 'crypto';
 import {
   getAccessibleChannels,
@@ -10,39 +11,156 @@ import {
   ensureAccessible,
   invalidateDialogsCache,
   getChannelPhotoBase64,
+  initScraper,
+  getBootOwnerTid,
 } from './scraper.js';
-import { loadChannels, saveChannels, channelTargets, logActivity, getActivity } from './store.js';
+import { loadUser, saveUser, deleteUser, channelTargets, logActivity, getActivity, normalizeIdentifier, getSession, saveSession, deleteSession } from './store.js';
 import { getActiveCount } from './tracking.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 const WEB_PASSWORD = process.env.WEB_PASSWORD || '';
-const statelessToken = () =>
-  crypto.createHmac('sha256', 'forwarder-web').update(WEB_PASSWORD).digest('hex');
+const SESSION_TTL = 30 * 24 * 3600 * 1000;
+const SECRET = (() => {
+  if (WEB_PASSWORD) return WEB_PASSWORD;
+  try { return fs.readFileSync('./.web_secret', 'utf8').trim(); } catch {}
+  const s = crypto.randomBytes(32).toString('hex');
+  try { fs.writeFileSync('./.web_secret', s); } catch {}
+  return s;
+})();
+
+const signToken = (tid, exp = Date.now() + SESSION_TTL) => {
+  const sig = crypto.createHmac('sha256', SECRET).update(`${tid}.${exp}`).digest('hex').slice(0, 32);
+  return `${tid}.${exp}.${sig}`;
+};
+const verifyToken = (token) => {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+  const [tid, exp] = parts;
+  if (!tid || Number(exp) < Date.now()) return null;
+  const sig = crypto.createHmac('sha256', SECRET).update(`${tid}.${exp}`).digest('hex').slice(0, 32);
+  return sig === parts[2] ? tid : null;
+};
+
+// ── Pending interactive MTProto logins (API ID/Hash + OTP) ──────
+const PENDING = new Map();
 
 export function startWebServer() {
   const app = express();
   app.use(express.json());
   app.use(express.static(join(__dirname, 'public')));
 
-  // ── Auth (only when WEB_PASSWORD is set) ──
+  // ── Legacy master password (owner scope; optional convenience) ──
   app.post('/api/login', (req, res) => {
-    if (!WEB_PASSWORD) return res.json({ ok: true, token: '' });
-    if (String(req.body?.password || '') === WEB_PASSWORD) return res.json({ ok: true, token: statelessToken() });
-    res.status(401).json({ ok: false, error: 'Wrong password' });
+    if (!WEB_PASSWORD) return res.status(400).json({ error: 'Master password disabled' });
+    if (String(req.body?.password || '') !== WEB_PASSWORD) return res.status(401).json({ error: 'Wrong password' });
+    res.json({ ok: true, token: signToken(getBootOwnerTid() || '_legacy') });
   });
 
+  app.get('/api/auth/options', (req, res) => {
+    res.json({ masterPassword: !!WEB_PASSWORD });
+  });
+
+  // ── Per-account Telegram login (API ID/Hash + phone + OTP) ─────
+  app.post('/api/auth/start', async (req, res) => {
+    const { apiId, apiHash, phone, dcId } = req.body || {};
+    if (!apiId || !apiHash || !phone) return res.status(400).json({ error: 'apiId, apiHash, phone required' });
+    try {
+      const { Api } = await import('telegram');
+      const { StringSession } = await import('telegram/sessions/index.js');
+      const clientOpts = { connectionRetries: 3 };
+      if (parseInt(dcId) > 0) clientOpts.dcId = parseInt(dcId);
+      const client = new (await import('telegram')).TelegramClient(new StringSession(''), Number(apiId), String(apiHash), clientOpts);
+      await client.connect();
+      const sent = await client.invoke(new Api.auth.SendCode({
+        phoneNumber: String(phone).trim(),
+        apiId: Number(apiId),
+        apiHash: String(apiHash),
+        settings: new Api.CodeSettings({ allowFlashcall: true, currentNumber: true, appHash: '' }),
+      }));
+      const loginToken = crypto.randomUUID();
+      PENDING.set(loginToken, {
+        client, phone: String(phone).trim(),
+        phoneCodeHash: sent.phoneCodeHash,
+        apiId: Number(apiId), apiHash: String(apiHash),
+        dcId: parseInt(dcId) || 0, state: 'code',
+      });
+      setTimeout(() => PENDING.delete(loginToken), 10 * 60 * 1000);
+      res.json({ ok: true, loginToken });
+    } catch (err) {
+      const sec = err.seconds || (err.errorMessage === 'FLOOD' ? 300 : 0);
+      if (sec > 0) return res.status(429).json({ error: `Telegram flood wait: ${Math.ceil(sec / 60)} min`, waitSeconds: sec });
+      res.status(400).json({ error: err.errorMessage || err.message });
+    }
+  });
+
+  app.post('/api/auth/verify', async (req, res) => {
+    const { loginToken, code, password } = req.body || {};
+    const st = PENDING.get(String(loginToken || ''));
+    if (!st) return res.status(404).json({ error: 'Login session expired — start again' });
+    try {
+      const { Api } = await import('telegram');
+      if (st.state === 'password') {
+        const pwd = await st.client.invoke(new Api.account.GetPassword());
+        const { computeCheck } = await import('telegram/Password.js');
+        await st.client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(pwd, String(password)) }));
+      } else {
+        await st.client.invoke(new Api.auth.SignIn({
+          phoneNumber: st.phone, phoneCodeHash: st.phoneCodeHash, phoneCode: String(code),
+        }));
+      }
+      const me = await st.client.getMe().catch(() => null);
+      const sessionStr = st.client.session.save();
+      await st.client.destroy().catch(() => {});
+
+      // Register the persistent scraper client under this account
+      const { tid } = await initScraper(sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: st.dcId });
+      saveSession(tid, { session: sessionStr, apiId: st.apiId, apiHash: st.apiHash, dc: st.dcId || 0, username: me?.username || '' });
+
+      // First real login claims any pre-multi-user data
+      const chs = loadUser(tid);
+      if (!Object.keys(chs).length) {
+        const legacy = loadUser('_legacy');
+        if (Object.keys(legacy).length) {
+          console.log(`[Auth] ${tid} claimed legacy workspace`);
+          saveUser(tid, legacy); deleteUser('_legacy');
+        }
+      }
+
+      PENDING.delete(loginToken);
+      logActivity('channel', `👤 @${me?.username || tid} logged in`);
+      res.json({ ok: true, token: signToken(tid), tid, username: me?.username || '' });
+    } catch (err) {
+      if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+        st.state = 'password';
+        return res.json({ ok: true, twoFactor: true });
+      }
+      if (err.errorMessage === 'PHONE_CODE_INVALID' || err.errorMessage === 'PHONE_CODE_EXPIRED') {
+        return res.status(400).json({ error: 'Invalid or expired code' });
+      }
+      if (err.errorMessage === 'PASSWORD_HASH_INVALID') return res.status(400).json({ error: 'Wrong 2FA password' });
+      res.status(500).json({ error: err.errorMessage || err.message });
+    }
+  });
+
+  // ── Auth middleware ────────────────────────────────────────────
   app.use('/api', (req, res, next) => {
-    if (!WEB_PASSWORD) return next();
-    if ((req.headers['x-web-token'] || '') === statelessToken()) return next();
-    res.status(401).json({ error: 'unauthorized' });
+    const tid = verifyToken(req.headers['x-web-token']);
+    if (!tid) return res.status(401).json({ error: 'unauthorized' });
+    req.tid = tid;
+    next();
+  });
+
+  app.get('/api/me', (req, res) => {
+    const sess = getSession(req.tid);
+    res.json({ tid: req.tid, username: sess?.username || '', isOwner: req.tid === getBootOwnerTid() });
   });
 
   app.get('/api/status', async (req, res) => {
-    const chs = loadChannels();
+    const chs = loadUser(req.tid);
     const entries = Object.entries(chs);
     res.json({
-      connected: isConnected(),
-      passwordRequired: !!WEB_PASSWORD,
+      connected: isConnected(req.tid),
+      user: { tid: req.tid, username: getSession(req.tid)?.username || '' },
       stats: {
         total: entries.length,
         active: entries.filter(([, v]) => v.active).length,
@@ -55,8 +173,8 @@ export function startWebServer() {
 
   app.get('/api/dialogs', async (req, res) => {
     try {
-      if (!isConnected()) return res.json({ connected: false, error: 'Telegram not connected', channels: [] });
-      const channels = await getAccessibleChannels(req.query.refresh === '1');
+      if (!isConnected(req.tid)) return res.json({ connected: false, error: 'Your Telegram is not connected', channels: [] });
+      const channels = await getAccessibleChannels(req.query.refresh === '1', req.tid);
       res.json({ connected: true, channels });
     } catch (err) {
       res.json({ connected: false, error: err.message, channels: [] });
@@ -64,7 +182,7 @@ export function startWebServer() {
   });
 
   app.get('/api/channels', async (req, res) => {
-    const chs = loadChannels();
+    const chs = loadUser(req.tid);
     res.json(Object.entries(chs).map(([source, info]) => ({
       source,
       mode: info.mode || 'forward',
@@ -88,19 +206,17 @@ export function startWebServer() {
     const id = String(req.query.id || '');
     if (!id) return res.status(400).json({ error: 'id required' });
     try {
-      const data = await getChannelPhotoBase64(id);
-      res.json({ ok: true, data }); // data may be '' when the channel has no photo
+      const data = await getChannelPhotoBase64(id, req.tid);
+      res.json({ ok: true, data });
     } catch (e) {
       res.json({ ok: false, error: e.message });
     }
   });
 
-  // ── Add channel: source + targets must be ACCESSIBLE (dialog list OR live
-  //    resolve/join — so pasted @usernames / t.me links / +invites work too) ──
-  // Returns a PLAIN STRING canonical identifier (never wrap it in an object).
-  const verifyAccess = async (identifier, role) => {
+  // ── Add channel: source + targets must be accessible by THIS account ──
+  const verifyAccess = async (identifier, role, tid) => {
     try {
-      return await ensureAccessible(identifier);
+      return await ensureAccessible(identifier, tid);
     } catch (e) {
       const msg = e.message || '';
       if (/not connected/i.test(msg)) {
@@ -117,15 +233,14 @@ export function startWebServer() {
       if (!targets.length) return res.status(400).json({ error: 'Pick at least one target' });
       if (!['extract', 'forward'].includes(mode)) return res.status(400).json({ error: 'Mode must be extract or forward' });
 
-      const srcKey = await verifyAccess(source, 'Source');
+      const srcKey = await verifyAccess(source, 'Source', req.tid);
 
-      const chs = loadChannels();
+      const chs = loadUser(req.tid);
       if (chs[srcKey]) return res.status(400).json({ error: 'Channel already added' });
 
-      // Resolve every target to its canonical key; dedupe & drop self-target
       const tKeys = [];
       for (const t of targets) {
-        const k = await verifyAccess(t, 'Target');
+        const k = await verifyAccess(t, 'Target', req.tid);
         if (k === srcKey) continue;
         if (!tKeys.includes(k)) tKeys.push(k);
       }
@@ -138,11 +253,11 @@ export function startWebServer() {
       }
 
       chs[srcKey] = entry;
-      saveChannels(chs);
-      invalidateDialogsCache();
+      saveUser(req.tid, chs);
+      invalidateDialogsCache(req.tid);
 
       let joined = false;
-      try { joined = await addChannelListener(srcKey); } catch (e) { console.error(`[Web] listen failed ${srcKey}:`, e.message); }
+      try { joined = await addChannelListener(srcKey, req.tid); } catch (e) { console.error(`[Web] listen failed ${srcKey}:`, e.message); }
       logActivity('channel', `📡 Added ${srcKey} → ${tKeys.join(', ')}`);
       res.json({ success: true, source: srcKey, targets: tKeys, joined });
     } catch (err) {
@@ -150,9 +265,8 @@ export function startWebServer() {
     }
   });
 
-  // ── Per-channel actions ──
   app.patch('/api/channels/:ch', async (req, res) => {
-    const chs = loadChannels();
+    const chs = loadUser(req.tid);
     const info = chs[req.params.ch];
     if (!info) return res.status(404).json({ error: 'Channel not found' });
     const { action } = req.body || {};
@@ -165,7 +279,7 @@ export function startWebServer() {
       if (info.tracking) info.tracking.enabled = !info.tracking.enabled;
       else info.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600, xAlerts: 'on', periodic: 'on' };
     } else return res.status(400).json({ error: 'Unknown action' });
-    saveChannels(chs);
+    saveUser(req.tid, chs);
     logActivity('channel', `${info.active ? '🟢' : '⏸'} ${req.params.ch} ${action}`);
     res.json({ success: true });
   });
@@ -174,43 +288,43 @@ export function startWebServer() {
     try {
       const { target } = req.body || {};
       if (!target) return res.status(400).json({ error: 'Target required' });
-      const chs = loadChannels();
+      const chs = loadUser(req.tid);
       const info = chs[req.params.ch];
       if (!info) return res.status(404).json({ error: 'Channel not found' });
 
-      const tKey = await verifyAccess(target, 'Target');
+      const tKey = await verifyAccess(target, 'Target', req.tid);
       if (tKey === req.params.ch) return res.status(400).json({ error: 'Target must differ from the source' });
 
       if (!info.targets) { info.targets = [info.target].filter(Boolean); delete info.target; }
       if (info.targets.includes(tKey)) return res.status(400).json({ error: 'Target already added' });
       info.targets.push(tKey);
-      saveChannels(chs);
-      invalidateDialogsCache();
+      saveUser(req.tid, chs);
+      invalidateDialogsCache(req.tid);
       logActivity('channel', `🎯 Target ${tKey} → ${req.params.ch}`);
       res.json({ success: true, targets: info.targets });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(err.status || 500).json({ error: err.message });
     }
   });
 
   app.delete('/api/channels/:ch/targets', (req, res) => {
-    const chs = loadChannels();
+    const chs = loadUser(req.tid);
     const info = chs[req.params.ch];
     if (!info) return res.status(404).json({ error: 'Channel not found' });
     const target = String(req.query.target || '');
     if (!info.targets) { info.targets = [info.target].filter(Boolean); delete info.target; }
     info.targets = info.targets.filter(t => t !== target);
     if (!info.targets.length) return res.status(400).json({ error: 'Channel needs at least one target' });
-    saveChannels(chs);
+    saveUser(req.tid, chs);
     res.json({ success: true, targets: info.targets });
   });
 
   app.delete('/api/channels/:ch', async (req, res) => {
-    const chs = loadChannels();
+    const chs = loadUser(req.tid);
     if (!chs[req.params.ch]) return res.status(404).json({ error: 'Channel not found' });
     delete chs[req.params.ch];
-    saveChannels(chs);
-    removeChannelListener(req.params.ch).catch(() => {});
+    saveUser(req.tid, chs);
+    removeChannelListener(req.params.ch, req.tid).catch(() => {});
     logActivity('channel', `🗑 Removed ${req.params.ch}`);
     res.json({ success: true });
   });

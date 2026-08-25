@@ -1,39 +1,41 @@
 import fs from 'fs';
+import crypto from 'crypto';
 
 const DB_FILE = './channels.json';
+const SESSIONS_FILE = './sessions.json';
 
-// ── Hot-path optimized channel store ─────────────────────────────
-// The scraper hits loadChannels() on EVERY incoming message. Reading and
-// parsing JSON from disk each time blocked the event loop, adding latency
-// to forwards. Now: in-memory object served instantly, revalidated against
-// the file mtime (a cheap stat) so manual edits still show up, and writes
-// are async + serialized (never block message handling, last-write-wins).
+// ── Multi-user channel store (no external DB — plain JSON) ───────
+// Shape v2: { __multi: true, users: { <telegramId>: { <source>: entry } } }
+// Legacy flat files ({ source: entry }) are migrated once into the
+// owner account (env session / first login).
 
-let _cache = null;
+let _cache = null;          // full parsed v2 object (users map lives at _cache.users)
 let _mtimeMs = 0;
+let _legacyOwner = null;    // tid that inherits pre-multi-user data
 let _writeChain = Promise.resolve();
 
-function _refreshFromDisk() {
-  let st;
-  try { st = fs.statSync(DB_FILE); } catch {
-    _cache = _cache || {};
+function _readDisk() {
+  try {
+    const st = fs.statSync(DB_FILE);
+    if (_cache !== null && st.mtimeMs === _mtimeMs) return _cache;
+    const raw = JSON.parse(fs.readFileSync(DB_FILE));
+    _mtimeMs = st.mtimeMs;
+    if (raw && raw.__multi && raw.users) {
+      _cache = { __multi: true, users: raw.users };
+    } else {
+      // Legacy flat file → nest under the designated owner
+      const owner = _legacyOwner || '_legacy';
+      console.log(`[Store] Migrating legacy channels.json → user ${owner}`);
+      _cache = { __multi: true, users: { [owner]: raw || {} } };
+    }
+    return _cache;
+  } catch {
+    _cache = _cache || { __multi: true, users: {} };
     return _cache;
   }
-  if (_cache === null || st.mtimeMs !== _mtimeMs) {
-    try {
-      _cache = JSON.parse(fs.readFileSync(DB_FILE));
-      _mtimeMs = st.mtimeMs;
-    } catch (e) {
-      console.error('[Store] read failed:', e.message);
-      _cache = _cache || {};
-    }
-  }
-  return _cache;
 }
 
-// Self-heal entries corrupted by earlier bugs (e.g. source keyed "[object Object]",
-// targets stored as {key:"…"} objects) so forwards keep working after upgrade.
-function _sanitize(chs) {
+function _sanitizeUser(chs) {
   for (const k of Object.keys(chs)) {
     if (k === '[object Object]' || k === 'undefined' || k === 'null') {
       console.warn(`[Store] Dropping corrupt channel entry "${k}"`);
@@ -55,25 +57,53 @@ function _sanitize(chs) {
   return chs;
 }
 
-export function loadChannels() {
-  // Mutating the returned object does NOT persist until saveChannels() is called.
-  return _sanitize(_refreshFromDisk());
+// Called once at boot with the env-session account id (may be null until
+// the first real login, which then claims the legacy bucket).
+export function initStore(legacyOwnerTid) {
+  if (legacyOwnerTid) _legacyOwner = String(legacyOwnerTid);
+  _readDisk();
 }
 
-export function saveChannels(channels) {
-  _sanitize(channels);
-  _cache = channels;
+export function loadUser(tid) {
+  const db = _readDisk();
+  const id = String(tid || '_legacy');
+  if (!db.users[id]) db.users[id] = {};
+  return _sanitizeUser(db.users[id]);
+}
+
+export function saveUser(tid, channels) {
+  const db = _readDisk();
+  _sanitizeUser(channels);
+  db.users[String(tid || '_legacy')] = channels;
+  _persist(JSON.stringify(db));
+  return _writeChain;
+}
+
+export function deleteUser(tid) {
+  const db = _readDisk();
+  delete db.users[String(tid)];
+  _persist(JSON.stringify(db));
+  return _writeChain;
+}
+
+export function listUserIds() {
+  return Object.keys(_readDisk().users);
+}
+
+export function flushStore() {
+  return _writeChain;
+}
+
+function _persist(json) {
   _writeChain = _writeChain.then(async () => {
-    await fs.promises.writeFile(DB_FILE, JSON.stringify(channels));
+    await fs.promises.writeFile(DB_FILE, json);
     try { _mtimeMs = fs.statSync(DB_FILE).mtimeMs; } catch {}
   }).catch(e => console.error('[Store] write failed:', e.message));
-  return _writeChain;
 }
 
-// Await this in tests/shutdown if durable state matters right now.
-export function flushChannels() {
-  return _writeChain;
-}
+// ── Per-user helpers kept for backward compatibility ─────────────
+export function loadChannels(tid) { return loadUser(tid); }
+export function saveChannels(channels, tid) { return saveUser(tid, channels); }
 
 export function channelTargets(info) {
   return info.targets || (info.target ? [info.target] : []);
@@ -84,6 +114,26 @@ export function normalizeIdentifier(raw) {
   let s = String(raw || '').trim();
   s = s.replace(/^https?:\/\/[^\s/]*\.?(telegram\.me|t\.me)\//i, '').replace(/^t\.me\//i, '');
   return s.replace(/^@/, '');
+}
+
+// ── Telegram session store (replaces external DB entirely) ───────
+// sessions.json: { <tid>: { session, apiId, apiHash, dc, username, updatedAt } }
+export function getSessions() {
+  try { return JSON.parse(fs.readFileSync(SESSIONS_FILE)); } catch { return {}; }
+}
+export function getSession(tid) {
+  return getSessions()[String(tid)] || null;
+}
+export function saveSession(tid, data) {
+  const all = getSessions();
+  all[String(tid)] = { ...all[String(tid)], ...data, updatedAt: Date.now() };
+  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(all, null, 2));
+  return all[String(tid)];
+}
+export function deleteSession(tid) {
+  const all = getSessions();
+  delete all[String(tid)];
+  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(all, null, 2));
 }
 
 // ── In-memory activity feed (powers the web dashboard live view) ──
