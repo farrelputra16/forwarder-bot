@@ -3,3 +3,4 @@ node_modules/
 channels.json
 tracking.json
 photo_cache/
+.web_secret

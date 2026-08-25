@@ -1,8 +1,6 @@
 import express from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import fs from 'fs';
-import * as crypto from 'crypto';
 import {
   getAccessibleChannels,
   isConnected,
@@ -16,30 +14,9 @@ import {
 } from './scraper.js';
 import { loadUser, saveUser, deleteUser, channelTargets, logActivity, getActivity, normalizeIdentifier, getSession, saveSession, deleteSession } from './store.js';
 import { getActiveCount } from './tracking.js';
+import { WEB_PASSWORD, signToken, verifyToken, signLinkToken, publicBaseUrl } from './auth.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
-const WEB_PASSWORD = process.env.WEB_PASSWORD || '';
-const SESSION_TTL = 30 * 24 * 3600 * 1000;
-const SECRET = (() => {
-  if (WEB_PASSWORD) return WEB_PASSWORD;
-  try { return fs.readFileSync('./.web_secret', 'utf8').trim(); } catch {}
-  const s = crypto.randomBytes(32).toString('hex');
-  try { fs.writeFileSync('./.web_secret', s); } catch {}
-  return s;
-})();
-
-const signToken = (tid, exp = Date.now() + SESSION_TTL) => {
-  const sig = crypto.createHmac('sha256', SECRET).update(`${tid}.${exp}`).digest('hex').slice(0, 32);
-  return `${tid}.${exp}.${sig}`;
-};
-const verifyToken = (token) => {
-  const parts = String(token || '').split('.');
-  if (parts.length !== 3) return null;
-  const [tid, exp] = parts;
-  if (!tid || Number(exp) < Date.now()) return null;
-  const sig = crypto.createHmac('sha256', SECRET).update(`${tid}.${exp}`).digest('hex').slice(0, 32);
-  return sig === parts[2] ? tid : null;
-};
 
 // ── Pending interactive MTProto logins (API ID/Hash + OTP) ──────
 const PENDING = new Map();
@@ -143,6 +120,23 @@ export function startWebServer() {
   });
 
   // ── Auth middleware ────────────────────────────────────────────
+  app.get('/api/auth/options', async (req, res) => {
+    let botUsername = '';
+    try {
+      const { getBotUsername, isBotActive } = await import('./telegram-bot.js');
+      if (isBotActive()) botUsername = getBotUsername() || '';
+    } catch {}
+    res.json({ masterPassword: !!WEB_PASSWORD, botUsername, publicUrl: publicBaseUrl() });
+  });
+
+  // One-time hand-off: Telegram bot mints a short token → web exchanges it
+  // for a standard session bound to the SAME telegram id.
+  app.post('/api/auth/exchange', (req, res) => {
+    const tid = verifyToken(String(req.body?.token || ''));
+    if (!tid) return res.status(401).json({ error: 'Invalid or expired login link' });
+    res.json({ ok: true, token: signToken(tid), tid });
+  });
+
   app.use('/api', (req, res, next) => {
     const tid = verifyToken(req.headers['x-web-token']);
     if (!tid) return res.status(401).json({ error: 'unauthorized' });
@@ -153,6 +147,23 @@ export function startWebServer() {
   app.get('/api/me', (req, res) => {
     const sess = getSession(req.tid);
     res.json({ tid: req.tid, username: sess?.username || '', isOwner: req.tid === getBootOwnerTid() });
+  });
+
+  // Deep link into the bot as THIS account — ids match on both sides.
+  app.get('/api/bot/link', async (req, res) => {
+    try {
+      const { getBotUsername, isBotActive } = await import('./telegram-bot.js');
+      const u = isBotActive() ? getBotUsername() : '';
+      if (!u) return res.json({ url: '', error: 'Bot not active' });
+      res.json({ url: `https://t.me/${u}?start=web_${req.tid}` });
+    } catch { res.json({ url: '', error: 'Bot unavailable' }); }
+  });
+
+  // Mint a short-lived dashboard login link for the CURRENT account
+  app.post('/api/web/login-link', (req, res) => {
+    const base = publicBaseUrl();
+    if (!base) return res.json({ ok: false, error: 'PUBLIC_URL/RENDER_EXTERNAL_URL not configured' });
+    res.json({ ok: true, url: `${base.replace(/\/$/, '')}/?auth=${signLinkToken(req.tid)}` });
   });
 
   app.get('/api/status', async (req, res) => {

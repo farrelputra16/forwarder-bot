@@ -110,6 +110,25 @@ test('web: auth required + users only ever see their own channels', async () => 
     r = await fetch(base + '/');
     const html = await r.text();
     assert.ok(html.includes('Forwarder Bot'));
+
+    // bot → web hand-off: short link token exchanges for a real session
+    const { signLinkToken } = await import('../auth.js');
+    r = await fetch(base + '/api/auth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: signLinkToken('user-b') }),
+    });
+    d = await r.json();
+    assert.equal(d.ok, true);
+    assert.equal(d.tid, 'user-b');
+
+    // forged/garbage tokens are rejected
+    r = await fetch(base + '/api/auth/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'garbage' }),
+    });
+    assert.equal(r.status, 401);
   } finally {
     server.close();
   }

@@ -1,8 +1,17 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary } from './scraper.js';
+import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
-import { loadChannels, saveChannels } from './store.js';
+import { loadUser, saveUser } from './store.js';
+import { signLinkToken, publicBaseUrl } from './auth.js';
+
+// Workspace scope: the bot user's OWN account when it exists in the store
+// (same telegram id as a web login), else the boot/owner account.
+function curTid(ctx) {
+  const id = String(ctx?.from?.id || '');
+  if (id && (getStateExact(id) || Object.keys(loadUser(id)).length)) return id;
+  return getBootOwnerTid();
+}
 
 export const bot = new Telegraf(config.botToken);
 
@@ -73,12 +82,13 @@ function manageKb(ch, info) {
   return { reply_markup: { inline_keyboard: rows } };
 }
 
-function menuKb() {
+function menuKb(ctx) {
   return {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📡 My Channels', callback_data: 'list_channels_0' }],
         [{ text: '➕ Add Channel', callback_data: 'add_channel' }],
+        [{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }],
         [{ text: '📊 Dashboard', callback_data: 'dashboard' }],
         [{ text: '❓ Help', callback_data: 'help' }]
       ]
@@ -89,22 +99,52 @@ function menuKb() {
 // ── Start / Menu ─────────────────────────────────────────────────
 
 bot.start(async (ctx) => {
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const e = Object.entries(chs);
   const a = e.filter(([, v]) => v.active).length;
+
+  // Deep link from the web dashboard: ?start=web_<tid> — confirm the handshake
+  // when the sender IS that account (ids match on both sides).
+  let linkNote = '';
+  if (String(ctx.payload || '') === `web_${ctx.from.id}`) {
+    linkNote = `\n\n🔗 *Connected to your web dashboard!* Same account, same channels.`;
+  }
+
   await ctx.reply(
-    `👋 *Welcome to Forwarder Bot*\n\nI help you forward messages from Telegram channels — extract contract addresses or forward entire messages to your target channels.\n\n📡 ${a}/${e.length} channels active`,
-    { parse_mode: 'Markdown', ...menuKb() }
+    `👋 *Welcome to Forwarder Bot*\n\nI help you forward messages from Telegram channels — extract contract addresses or forward entire messages to your target channels.\n\n📡 ${a}/${e.length} channels active${linkNote}`,
+    { parse_mode: 'Markdown', ...menuKb(ctx) }
+  );
+});
+
+// ── Open Web Dashboard (auto-login hand-off) ─────────────────────
+bot.action('open_web', async (ctx) => {
+  const base = publicBaseUrl();
+  if (!base) {
+    return ctx.editMessageText(
+      `⚠️ *Web URL belum dikonfigurasi.*\n\nSet env \`PUBLIC_URL\` (atau deploy ke Render agar \`RENDER_EXTERNAL_URL\` tersedia), lalu coba lagi.`,
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'menu' }]] } }
+    );
+  }
+  const url = `${base.replace(/\/$/, '')}/?auth=${signLinkToken(curTid(ctx))}`;
+  await ctx.editMessageText(
+    `🌐 *Web Dashboard*\n━━━━━━━━━━━━━━━━━━━━\nTap the button below — the dashboard opens **already logged in as this account**.\n\n🔗 Login link valid for *5 minutes*.`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [
+        [{ text: '🌐 Open Dashboard', url }],
+        [{ text: '🏠 Menu', callback_data: 'menu' }]
+      ] }
+    }
   );
 });
 
 bot.action('menu', async (ctx) => {
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const e = Object.entries(chs);
   const a = e.filter(([, v]) => v.active).length;
   await ctx.editMessageText(
     `🤖 *Forwarder Bot*\n\n📡 ${a}/${e.length} channels active`,
-    { parse_mode: 'Markdown', ...menuKb() }
+    { parse_mode: 'Markdown', ...menuKb(ctx) }
   );
 });
 
@@ -113,7 +153,7 @@ bot.action('noop', (ctx) => ctx.answerCbQuery(''));
 // ── Dashboard ────────────────────────────────────────────────────
 
 bot.action('dashboard', async (ctx) => {
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const e = Object.entries(chs);
   const a = e.filter(([, v]) => v.active).length;
   const p = e.length - a;
@@ -156,7 +196,7 @@ bot.action('help', async (ctx) => {
 
 bot.action(/^list_channels_(\d+)$/, async (ctx) => {
   const page = parseInt(ctx.match[1]);
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const e = Object.entries(chs);
   const total = e.length;
   const tp = Math.ceil(total / PER_PAGE) || 1;
@@ -197,7 +237,7 @@ bot.action(/^list_channels_(\d+)$/, async (ctx) => {
 
 bot.action(/^channel_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const info = chs[ch];
   if (!info) return ctx.answerCbQuery('Not found');
   await ctx.editMessageText(detail(ch, info), {
@@ -208,10 +248,10 @@ bot.action(/^channel_(.+)$/, async (ctx) => {
 
 bot.action(/^toggle_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].active = !chs[ch].active;
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   await ctx.answerCbQuery(chs[ch].active ? '▶️ Resumed' : '⏸ Paused');
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -221,11 +261,11 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
 
 bot.action(/^toggledup_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].ignoreDuplicate = !chs[ch].ignoreDuplicate;
   if (!chs[ch].seenCAs) chs[ch].seenCAs = [];
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   await ctx.answerCbQuery(chs[ch].ignoreDuplicate ? '✅ Dup Ignored' : '❌ Dup Pass Through');
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -235,10 +275,10 @@ bot.action(/^toggledup_(.+)$/, async (ctx) => {
 
 bot.action(/^switchmode_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].mode = chs[ch].mode === 'extract' ? 'forward' : 'extract';
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   await ctx.answerCbQuery(`Mode: ${chs[ch].mode === 'extract' ? '📋 Extract' : '📨 Forward'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -252,13 +292,13 @@ function cycle(s) {
 
 bot.action(/^cyclex_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   const next = cycle(chs[ch].tracking?.xAlerts);
   if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
   chs[ch].tracking.xAlerts = next;
-  saveChannels(chs);
-  updateTrackingXStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next);
+  saveUser(chs, curTid(ctx));
+  updateTrackingXStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next, curTid(ctx));
   await ctx.answerCbQuery(`X Alerts: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -268,13 +308,13 @@ bot.action(/^cyclex_(.+)$/, async (ctx) => {
 
 bot.action(/^cyclep_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   const next = cycle(chs[ch].tracking?.periodic);
   if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
   chs[ch].tracking.periodic = next;
-  saveChannels(chs);
-  updateTrackingPeriodicStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next);
+  saveUser(chs, curTid(ctx));
+  updateTrackingPeriodicStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next, curTid(ctx));
   await ctx.answerCbQuery(`Updates: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -302,9 +342,9 @@ bot.action(/^delete_(.+)$/, async (ctx) => {
 
 bot.action(/^confirm_delete_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   delete chs[ch];
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   await ctx.answerCbQuery('🗑 Deleted');
   await ctx.editMessageText(
     `🗑 *Deleted*\n\n\`${ch}\` has been removed.`,
@@ -324,7 +364,7 @@ bot.action(/^confirm_delete_(.+)$/, async (ctx) => {
 
 bot.action(/^manage_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const info = chs[ch];
   if (!info) return ctx.answerCbQuery('Not found');
   await ctx.editMessageText(detail(ch, info), {
@@ -337,7 +377,7 @@ bot.action(/^manage_(.+)$/, async (ctx) => {
 
 bot.action(/^addtarget_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   userState.set(ctx.from.id, { step: 'ADD_TARGET', channel: ch });
   await ctx.editMessageText(
@@ -467,14 +507,14 @@ bot.on('text', async (ctx) => {
     s.step = 'TRACKING_FINAL';
     processTrackingFinal(ctx, s);
   } else if (s.step === 'ADD_TARGET') {
-    const chs = loadChannels();
+    const chs = loadUser(curTid(ctx));
     if (!chs[s.channel]) return ctx.reply('⚠️ Channel not found.');
     if (!chs[s.channel].targets) {
       chs[s.channel].targets = [chs[s.channel].target].filter(Boolean);
       delete chs[s.channel].target;
     }
     chs[s.channel].targets.push(ctx.message.text);
-    saveChannels(chs);
+    saveUser(chs, curTid(ctx));
     await ctx.reply(
       `✅ *Target Added*\n\n\`${ctx.message.text}\`\n\nAll targets: ${chs[s.channel].targets.join(', ')}`,
       {
@@ -493,15 +533,15 @@ bot.on('text', async (ctx) => {
 // ── Process Tracking Final ───────────────────────────────────────
 
 async function processTrackingFinal(ctx, s) {
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   const entry = { mode: s.mode, targets: s.targets || [s.target].filter(Boolean), active: true };
   if (s.tracking) {
     entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: s.interval, xAlerts: 'on', periodic: 'on' };
   }
   chs[s.link] = entry;
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   try {
-    await addChannelListener(s.link);
+    await addChannelListener(s.link, curTid(ctx));
     const sum = [
       '✅ *Channel Added*',
       '━━━━━━━━━━━━━━━━━━━━',
@@ -531,7 +571,7 @@ async function processTrackingFinal(ctx, s) {
 // ── Legacy Commands ──────────────────────────────────────────────
 
 bot.command('list_channels', (ctx) => {
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!Object.keys(chs).length) {
     return ctx.reply('📡 No channels yet.', {
       reply_markup: {
@@ -543,7 +583,7 @@ bot.command('list_channels', (ctx) => {
   }
   ctx.reply('📡 *My Channels*', {
     parse_mode: 'Markdown',
-    ...menuKb()
+    ...menuKb(ctx)
   });
 });
 
@@ -566,10 +606,10 @@ bot.command('set_mode', (ctx) => {
   if (!['extract', 'forward'].includes(mode)) {
     return ctx.reply('Mode must be "extract" or "forward".');
   }
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   chs[channel].mode = mode;
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   ctx.reply(`✅ Mode for ${channel} → ${mode}.`);
 });
 
@@ -580,14 +620,14 @@ bot.command('set_target', (ctx) => {
   }
   const [channel, ...rest] = args;
   const target = rest.join(' ');
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   if (!chs[channel].targets) {
     chs[channel].targets = [chs[channel].target].filter(Boolean);
     delete chs[channel].target;
   }
   chs[channel].targets.push(target);
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   ctx.reply(`✅ Target added for ${channel}: ${target}\nAll targets: ${chs[channel].targets.join(', ')}`);
 });
 
@@ -599,7 +639,7 @@ bot.command('track', (ctx) => {
     return ctx.reply('Usage: /track <channel> <on|off>\nExample: `/track @channel on`', { parse_mode: 'Markdown' });
   }
   const [channel, action] = args;
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   if (action === 'on') {
     chs[channel].tracking = chs[channel].tracking || { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
@@ -611,7 +651,7 @@ bot.command('track', (ctx) => {
   } else {
     return ctx.reply('Action must be "on" or "off".');
   }
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   ctx.reply(`📊 Tracking for ${channel} → *${action}*.`, { parse_mode: 'Markdown' });
 });
 
@@ -621,7 +661,7 @@ bot.command('track_set', (ctx) => {
     return ctx.reply('Usage: /track_set <channel> <multipliers> <interval_sec>\nExample: `/track_set @channel 2,3,5,10 3600`', { parse_mode: 'Markdown' });
   }
   const [channel, multStr, intervalStr] = args;
-  const chs = loadChannels();
+  const chs = loadUser(curTid(ctx));
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   const multipliers = multStr.split(',').map(Number).filter(n => !isNaN(n) && n > 0);
   const interval = parseInt(intervalStr);
@@ -629,7 +669,7 @@ bot.command('track_set', (ctx) => {
     return ctx.reply('⚠️ Invalid multipliers or interval (min 60s).');
   }
   chs[channel].tracking = { enabled: true, multipliers, interval, xAlerts: 'on', periodic: 'on' };
-  saveChannels(chs);
+  saveUser(chs, curTid(ctx));
   ctx.reply(`📊 Tracking for ${channel}: ${multipliers.join('X, ')}X, ${interval}s interval.`);
 });
 
