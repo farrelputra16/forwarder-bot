@@ -84,9 +84,10 @@ export function startWebServer() {
 
   // ── Add channel: source + targets must be ACCESSIBLE (dialog list OR live
   //    resolve/join — so pasted @usernames / t.me links / +invites work too) ──
+  // Returns a PLAIN STRING canonical identifier (never wrap it in an object).
   const verifyAccess = async (identifier, role) => {
     try {
-      return { key: await ensureAccessible(identifier) };
+      return await ensureAccessible(identifier);
     } catch (e) {
       const msg = e.message || '';
       if (/not connected/i.test(msg)) {

@@ -31,12 +31,37 @@ function _refreshFromDisk() {
   return _cache;
 }
 
+// Self-heal entries corrupted by earlier bugs (e.g. source keyed "[object Object]",
+// targets stored as {key:"…"} objects) so forwards keep working after upgrade.
+function _sanitize(chs) {
+  for (const k of Object.keys(chs)) {
+    if (k === '[object Object]' || k === 'undefined' || k === 'null') {
+      console.warn(`[Store] Dropping corrupt channel entry "${k}"`);
+      delete chs[k];
+      continue;
+    }
+    const v = chs[k];
+    if (!v || typeof v !== 'object') { delete chs[k]; continue; }
+    if (Array.isArray(v.targets)) {
+      v.targets = v.targets
+        .map(t => typeof t === 'string' ? t : (t && t.key) ? String(t.key) : String(t))
+        .filter(t => t && t !== '[object Object]');
+    }
+    if (v.target != null && typeof v.target === 'object') {
+      v.target = (v.target.key != null) ? String(v.target.key) : '';
+      if (!v.target) delete v.target;
+    }
+  }
+  return chs;
+}
+
 export function loadChannels() {
   // Mutating the returned object does NOT persist until saveChannels() is called.
-  return _refreshFromDisk();
+  return _sanitize(_refreshFromDisk());
 }
 
 export function saveChannels(channels) {
+  _sanitize(channels);
   _cache = channels;
   _writeChain = _writeChain.then(async () => {
     await fs.promises.writeFile(DB_FILE, JSON.stringify(channels));

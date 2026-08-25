@@ -47,6 +47,18 @@ test('store: loadChannels picks up external file edits (mtime revalidate)', asyn
   assert.ok(chs['@edited'], 'external edit must appear after mtime change');
 });
 
+test('store: sanitizes corrupt [object Object] keys and object targets', async () => {
+  const fs = await import('node:fs');
+  fs.writeFileSync('./channels.json', JSON.stringify({
+    '[object Object]': { mode: 'extract', targets: [{ key: 'spongesolana' }], active: true },
+    '@good': { mode: 'forward', targets: [{ key: 'x' }, '@ok', '[object Object]'], active: true },
+  }));
+  const chs = store.loadChannels();
+  assert.equal(chs['[object Object]'], undefined, 'corrupt key must be dropped');
+  assert.deepEqual(chs['@good'].targets, ['x', '@ok'], '{key} objects coerced to strings, garbage filtered');
+  await store.flushChannels();
+});
+
 // ── Web API smoke (no Telegram connect needed) ──
 
 test('web: status, dialogs degrade gracefully + accessible-only validation enforced server-side', async () => {
