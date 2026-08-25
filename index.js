@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt } from './scraper.js';
+import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt } from './scraper.js';
 import { config } from './config.js';
 import { initTrackings, addTracking } from './tracking.js';
 import { startWebServer } from './web.js';
@@ -8,6 +8,7 @@ import { loadChannels, saveChannels, logActivity } from './store.js';
 await initScraper(config.telegram.session);
 initTrackings();
 startWebServer();
+startKeepAlive();
 
 // Forwarding Logic — hot path: zero blocking IO, targets fanned out in parallel
 const sendAll = async (targets, text, parseMode) => {

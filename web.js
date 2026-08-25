@@ -7,8 +7,10 @@ import {
   isConnected,
   addChannelListener,
   removeChannelListener,
+  ensureAccessible,
+  invalidateDialogsCache,
 } from './scraper.js';
-import { loadChannels, saveChannels, channelTargets, logActivity, getActivity, normalizeIdentifier } from './store.js';
+import { loadChannels, saveChannels, channelTargets, logActivity, getActivity } from './store.js';
 import { getActiveCount } from './tracking.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
@@ -34,14 +36,6 @@ export function startWebServer() {
     res.status(401).json({ error: 'unauthorized' });
   });
 
-  // ── Accessible dialogs — the ONLY selectable sources/targets ──
-  async function accessibleSet() {
-    const acc = await getAccessibleChannels();
-    return { list: acc, set: new Set(acc.map(a => normalizeIdentifier(a.identifier))) };
-  }
-  const findAccessible = (accList, raw) =>
-    accList.find(a => normalizeIdentifier(a.identifier) === normalizeIdentifier(raw)) || null;
-
   app.get('/api/status', async (req, res) => {
     const chs = loadChannels();
     const entries = Object.entries(chs);
@@ -60,7 +54,8 @@ export function startWebServer() {
 
   app.get('/api/dialogs', async (req, res) => {
     try {
-      const channels = await getAccessibleChannels();
+      if (!isConnected()) return res.json({ connected: false, error: 'Telegram not connected', channels: [] });
+      const channels = await getAccessibleChannels(req.query.refresh === '1');
       res.json({ connected: true, channels });
     } catch (err) {
       res.json({ connected: false, error: err.message, channels: [] });
@@ -87,7 +82,20 @@ export function startWebServer() {
 
   app.get('/api/activity', (req, res) => res.json(getActivity()));
 
-  // ── Add channel: source + targets MUST come from accessible set ──
+  // ── Add channel: source + targets must be ACCESSIBLE (dialog list OR live
+  //    resolve/join — so pasted @usernames / t.me links / +invites work too) ──
+  const verifyAccess = async (identifier, role) => {
+    try {
+      return { key: await ensureAccessible(identifier) };
+    } catch (e) {
+      const msg = e.message || '';
+      if (/not connected/i.test(msg)) {
+        throw Object.assign(new Error('Telegram not connected — cannot verify channel access'), { status: 503 });
+      }
+      throw Object.assign(new Error(`${role} "${identifier}" is not accessible by your Telegram account (${msg})`), { status: 400 });
+    }
+  };
+
   app.post('/api/channels', async (req, res) => {
     try {
       const { source, targets = [], mode = 'extract', tracking } = req.body || {};
@@ -95,35 +103,36 @@ export function startWebServer() {
       if (!targets.length) return res.status(400).json({ error: 'Pick at least one target' });
       if (!['extract', 'forward'].includes(mode)) return res.status(400).json({ error: 'Mode must be extract or forward' });
 
+      const srcKey = await verifyAccess(source, 'Source');
+
       const chs = loadChannels();
-      if (chs[source]) return res.status(400).json({ error: 'Channel already added' });
+      if (chs[srcKey]) return res.status(400).json({ error: 'Channel already added' });
 
-      let acc;
-      try { acc = await accessibleSet(); }
-      catch { return res.status(503).json({ error: 'Telegram not connected — cannot verify channel access' }); }
-      const { list, set } = acc;
-      const src = findAccessible(list, source);
-      if (!src) return res.status(400).json({ error: `Source "${source}" is not accessible by your Telegram account` });
-      const bad = targets.filter(t => !set.has(normalizeIdentifier(t)));
-      if (bad.length) return res.status(400).json({ error: `Target(s) not accessible: ${bad.join(', ')}` });
+      // Resolve every target to its canonical key; dedupe & drop self-target
+      const tKeys = [];
+      for (const t of targets) {
+        const k = await verifyAccess(t, 'Target');
+        if (k === srcKey) continue;
+        if (!tKeys.includes(k)) tKeys.push(k);
+      }
+      if (!tKeys.length) return res.status(400).json({ error: 'Targets must differ from the source' });
 
-      const entry = { mode, targets, active: true };
+      const entry = { mode, targets: tKeys, active: true };
       if (tracking?.enabled) {
         const h = Math.max(1, parseInt(tracking.intervalHours) || 1);
         entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: h * 3600, xAlerts: 'on', periodic: 'on' };
       }
 
-      // Store under the resolved identifier (username when public, marked id when private)
-      const key = src.identifier;
-      chs[key] = entry;
+      chs[srcKey] = entry;
       saveChannels(chs);
+      invalidateDialogsCache();
 
       let joined = false;
-      try { joined = await addChannelListener(key); } catch (e) { console.error(`[Web] listen failed ${key}:`, e.message); }
-      logActivity('channel', `📡 Added ${key} → ${targets.join(', ')}`);
-      res.json({ success: true, source: key, joined });
+      try { joined = await addChannelListener(srcKey); } catch (e) { console.error(`[Web] listen failed ${srcKey}:`, e.message); }
+      logActivity('channel', `📡 Added ${srcKey} → ${tKeys.join(', ')}`);
+      res.json({ success: true, source: srcKey, targets: tKeys, joined });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(err.status || 500).json({ error: err.message });
     }
   });
 
@@ -155,18 +164,15 @@ export function startWebServer() {
       const info = chs[req.params.ch];
       if (!info) return res.status(404).json({ error: 'Channel not found' });
 
-      let acc;
-      try { acc = await accessibleSet(); }
-      catch { return res.status(503).json({ error: 'Telegram not connected — cannot verify channel access' }); }
-      const { list, set } = acc;
-      const t = findAccessible(list, target);
-      if (!t) return res.status(400).json({ error: `Target "${target}" is not accessible by your Telegram account` });
+      const tKey = await verifyAccess(target, 'Target');
+      if (tKey === req.params.ch) return res.status(400).json({ error: 'Target must differ from the source' });
 
       if (!info.targets) { info.targets = [info.target].filter(Boolean); delete info.target; }
-      if (info.targets.includes(t.identifier)) return res.status(400).json({ error: 'Target already added' });
-      info.targets.push(t.identifier);
+      if (info.targets.includes(tKey)) return res.status(400).json({ error: 'Target already added' });
+      info.targets.push(tKey);
       saveChannels(chs);
-      logActivity('channel', `🎯 Target ${t.identifier} → ${req.params.ch}`);
+      invalidateDialogsCache();
+      logActivity('channel', `🎯 Target ${tKey} → ${req.params.ch}`);
       res.json({ success: true, targets: info.targets });
     } catch (err) {
       res.status(500).json({ error: err.message });

@@ -162,6 +162,14 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
 .cb-row{display:flex;align-items:center;gap:.55rem;padding:.7rem .85rem;border:1px solid var(--border);border-radius:var(--r-md);cursor:pointer}
 .cb-row input{width:1.05rem;height:1.05rem;accent-color:var(--accent)}
 
+/* ── Tabs & inline link input ── */
+.cp-tabs{display:flex;gap:.3rem;margin-bottom:.6rem;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:9999px;padding:.22rem}
+.cp-tab{flex:1;text-align:center;padding:.38rem .6rem;border-radius:9999px;font-size:.68rem;font-weight:700;color:var(--text3);cursor:pointer;transition:all .25s var(--spring);user-select:none}
+.cp-tab:hover{color:var(--text2)}
+.cp-tab.active{color:#fff;background:var(--accent);box-shadow:0 2px 10px rgba(108,92,231,.3)}
+.link-in{flex:1;min-width:0;padding:.45rem .8rem;border-radius:9999px;border:1px solid var(--border);background:rgba(255,255,255,.03);font-size:.72rem;outline:none;color:var(--text)}
+.link-in:focus{border-color:var(--accent)}
+
 /* ── Toast ── */
 .toasts{position:fixed;bottom:1.2rem;right:1.2rem;z-index:200;display:flex;flex-direction:column;gap:.45rem}
 .toast{padding:.6rem 1rem;border-radius:12px;font-size:.75rem;font-weight:600;background:var(--card2);border:1px solid var(--border);box-shadow:var(--shadow);animation:slideIn .35s var(--spring);max-width:320px}
@@ -225,7 +233,15 @@ function toast(m,t=''){const e=document.createElement('div');e.className='toast 
 async function api(p,o={}){
   const h={'Content-Type':'application/json'};
   if(TOKEN)h['x-web-token']=TOKEN;
-  const r=await fetch('/api'+p,{headers:h,...o});
+  const ctl=new AbortController();
+  const to=setTimeout(()=>ctl.abort(),25000); // never hang forever on a dead Telegram link
+  let r;
+  try{
+    r=await fetch('/api'+p,{headers:h,...o,signal:ctl.signal});
+  }catch(e){
+    if(e.name==='AbortError')throw new Error('Request timed out — Telegram slow or offline. Try again or paste a link instead.');
+    throw e;
+  }finally{clearTimeout(to)}
   if(r.status===401){localStorage.removeItem('fw_token');TOKEN='';$('#lock').classList.add('open');throw new Error('unauthorized')}
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.error||r.statusText);
@@ -302,14 +318,14 @@ window.chanAction=async(src,action)=>{try{await api('/channels/'+encodeURICompon
 window.rmTarget=async(src,t)=>{try{await api('/channels/'+encodeURIComponent(src)+'/targets?target='+encodeURIComponent(t),{method:'DELETE'});toast('Target removed');refreshAll()}catch(e){toast(e.message,'err')}};
 window.delChan=async src=>{if(!confirm(`Delete ${src}? Forwarding stops immediately.`))return;try{await api('/channels/'+encodeURIComponent(src),{method:'DELETE'});toast('Channel deleted');refreshAll()}catch(e){toast(e.message,'err')}};
 
-// ── Dialog picker (accessible-only) ──
+// ── Dialog picker ──
 async function loadDialogs(force){
-  if(DIALOGS&&!force)return DIALOGS;
-  DIALOGS=await api('/dialogs');
+  if(DIALOGS&&DIALOGS.connected&&!force)return DIALOGS;
+  DIALOGS=await api('/dialogs'+(force?'?refresh=1':''));
   return DIALOGS;
 }
 function pickerRows(list,{selected=[],disabled=[],single=false}={}){
-  return list.filter(d=>!ql||d.title.toLowerCase().includes(ql)||(d.username||'').toLowerCase().includes(ql)).map(d=>{
+  const rows=list.map(d=>{
     const sel=selected.includes(d.identifier);
     const dis=!sel&&disabled.includes(d.identifier);
     return`<div class="prow ${sel?'sel':''} ${dis?'dis':''}" data-id="${esc(d.identifier)}" data-type="${d.type}" ${dis?'':`onclick="pickRow(this)"`}>
@@ -317,19 +333,27 @@ function pickerRows(list,{selected=[],disabled=[],single=false}={}){
       <div class="pin"><b>${esc(d.title)}</b><small>${d.username?'@'+esc(d.username):'private · '+esc(d.id)}${d.participants?' · '+d.participants:''}</small></div>
       <span class="badge ${d.type==='group'?'b-green':'b-purple'}" style="font-size:.53rem">${d.type==='group'?'👥':'📢'}</span>
       <input type="${single?'radio':'checkbox'}" class="check" ${sel?'checked':''} tabindex="-1" onclick="event.stopPropagation()">
-    </div>`}).join('')||'<div class="empty"><div class="ico">🔍</div><p>No matches</p></div>';
+    </div>`});
+  return rows.join('')||'<div class="empty"><div class="ico">🔍</div><p>No channels found</p></div>';
 }
+
 // ── Add Channel wizard ──
 let WZ=null;
 window.openWizard=async function(){
   WZ={step:1,source:null,mode:'extract',targets:[],tracking:false,intervalHours:1};
   openModal(`<div class="modal-h"><h2>＋ Add Forward Channel</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="steps">${[1,2,3,4].map(i=>`<div class="step-dot ${i<=WZ.step?'on':''}"></div>`).join('')}</div>
-    <div class="modal-b" id="wz-body"><div class="skel" style="height:200px"></div></div>`);
-  try{await loadDialogs(true)}catch(e){}
-  if(!DIALOGS||!DIALOGS.connected){$('#wz-body').innerHTML=`<div class="empty"><div class="ico">🔌</div><p><b>Telegram not connected.</b><br>The bot's account must be online to browse accessible channels. Check the connection pill up top or restart the server.</p></div><div class="modal-f" style="padding:0"><button class="btn btn-g" onclick="closeModal()">Close</button></div>`;return}
-  wzStep1();
+    <div class="steps">${[1,2,3,4].map(i=>`<div class="step-dot on"></div>`).join('')}</div>
+    <div class="modal-b" id="wz-body"></div>`);
+  injectFooter(1);
+  wzLoadDialogs();
 };
+async function wzLoadDialogs(){
+  if(WZ&&WZ.step===1){
+    $('#wz-body').innerHTML=`<p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 1 — Source.</b> Pick from your channels, or paste a link below.</p><div class="skel" style="height:180px;border-radius:12px"></div>`;
+  }
+  try{ await loadDialogs(true); }catch(e){ /* step1 shows retry + link option */ }
+  if(WZ&&WZ.step===1) wzStep1();
+}
 function openModal(h){$('#modal').innerHTML=h;$('#overlay').classList.add('open')}
 window.closeModal=()=>{$('#overlay').classList.remove('open')};
 $('#overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal()});
@@ -337,23 +361,57 @@ function setStep(n){document.querySelectorAll('.step-dot').forEach((d,i)=>d.clas
 
 function wzStep1(){
   setStep(1);
-  $('#wz-body').innerHTML=`
-    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 1 — Source.</b> Only channels & groups your Telegram account has joined are listed.</p>
-    <div class="search"><input id="q1" placeholder="Search…" oninput="wzFilter1(this.value)"></div>
-    <div class="picker" id="list1">${pickerRows(DIALOGS.channels,{selected:WZ.source?[WZ.source]:[],single:true})}</div>`;
+  const ok=!!(DIALOGS&&DIALOGS.connected);
+  const list=(DIALOGS&&DIALOGS.channels)||[];  $('#wz-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 1 — Source.</b> Pick from channels your account has joined, or paste a link.</p>
+    <div class="cp-tabs">
+      <span class="cp-tab active" id="tab-fetch" onclick="wzTab('fetch')">📡 My Channels</span>
+      <span class="cp-tab" id="tab-link" onclick="wzTab('link')">🔗 Paste Link</span>
+    </div>
+    <div id="pane-fetch">
+      ${ok?`
+        <div class="search"><input placeholder="Search channel…" oninput="wzFilter1(this.value)"></div>
+        <div class="picker" id="list1">${pickerRows(list,{selected:WZ.source?[WZ.source]:[],single:true})}</div>`
+      :`<div class="empty" style="padding:1.4rem 1rem">
+          <div class="ico">🔌</div><p><b>${esc((DIALOGS&&DIALOGS.error)||'Telegram not connected')}</b><br>Can't browse your channels right now — you can still paste a link, or retry.</p>
+          <button class="btn btn-g btn-sm" style="margin-top:.6rem" onclick="wzLoadDialogs()">↻ Retry</button>
+        </div>`}
+    </div>
+    <div id="pane-link" style="display:none">
+      <div class="field" style="margin-top:.2rem">
+        <label>Channel username or link</label>
+        <input id="src-link-input" placeholder="@channel · https://t.me/channel · https://t.me/+invite" oninput="WZ.source=this.value.trim()||null" value="${esc(WZ.source&&!WZ.source.startsWith('-')?WZ.source:'')}"/>
+      </div>
+      <p class="hint" style="margin-top:.45rem">The bot's Telegram account must be able to access this channel — private invite links are joined automatically when possible.</p>
+    </div>`;
 }
+window.wzLoadDialogs=wzLoadDialogs;
+window.wzTab=t=>{
+  $('#tab-fetch').classList.toggle('active',t==='fetch');
+  $('#tab-link').classList.toggle('active',t==='link');
+  $('#pane-fetch').style.display=t==='fetch'?'block':'none';
+  $('#pane-link').style.display=t==='link'?'block':'none';
+};
 window.wzFilter1=q=>{document.querySelectorAll('#list1 .prow').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'flex':'none')};
 window.pickRow=el=>{
   const id=el.dataset.id;
-  if(WZ.step===1){WZ.source=id;document.querySelectorAll('#list1 .prow').forEach(r=>{r.classList.toggle('sel',r===el);const c=r.querySelector('.check');c.checked=r===el})}
-  else{
+  if(WZ.step===1){
+    WZ.source=id;
+    document.querySelectorAll('#list1 .prow').forEach(r=>{r.classList.toggle('sel',r===el);const c=r.querySelector('.check');if(c)c.checked=r===el});
+  }else{
     const cb=el.querySelector('.check');
     if(cb.checked){WZ.targets=WZ.targets.filter(t=>t!==id)}else{WZ.targets.push(id)}
     cb.checked=!cb.checked;el.classList.toggle('sel');
+    renderTgtChips();
   }
 };
+function renderTgtChips(){
+  const el=$('#tgt-chips');
+  if(el)el.innerHTML=WZ.targets.map(t=>`<span class="tgt-chip"><span>${esc(t)}</span><button onclick="wzUnpick('${esc(t)}')">×</button></span>`).join('')||'<span class="hint">Nothing selected yet</span>';
+}
 function wzNext1(){
-  if(!WZ.source)return toast('Pick a source channel first','err');
+  if(!WZ.source&&$('#src-link-input'))WZ.source=$('#src-link-input').value.trim()||null;
+  if(!WZ.source)return toast('Pick a channel or paste a link first','err');
   wzStep2();
 }
 function wzStep2(){
@@ -368,16 +426,29 @@ function wzStep2(){
 window.wzMode=el=>{WZ.mode=el.dataset.m;document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('sel',c===el))};
 function wzStep3(){
   setStep(3);
+  const ok=!!(DIALOGS&&DIALOGS.connected);
   $('#wz-body').innerHTML=`
-    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 3 — Targets.</b> Pick one or more destinations — limited to what your account can access.</p>
-    <div class="sel-chips" id="tgt-chips">${WZ.targets.map(t=>`<span class="tgt-chip"><span>${esc(t)}</span><button onclick="wzUnpick('${esc(t)}')">×</button></span>`).join('')||'<span class="hint">Nothing selected yet</span>'}</div>
-    <div class="search"><input placeholder="Search…" oninput="wzFilter3(this.value)"></div>
-    <div class="picker" id="list3">${pickerRows(DIALOGS.channels,{selected:WZ.targets,disabled:WZ.source?[WZ.source]:[]})}</div>`;
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 3 — Targets.</b> Where should forwards go? Pick, search, or paste a link.</p>
+    <div class="sel-chips" id="tgt-chips"></div>
+    <div style="display:flex;gap:.4rem;margin-bottom:.55rem">
+      <input id="tgt-link" class="link-in" placeholder="+ add via @username / t.me link / +invite" onkeydown="if(event.key==='Enter')wzAddLinkTarget()">
+      <button class="btn btn-g btn-sm" onclick="wzAddLinkTarget()">＋ Add</button>
+    </div>
+    ${ok?`
+      <div class="search"><input placeholder="Search…" oninput="wzFilter3(this.value)"></div>
+      <div class="picker" id="list3">${pickerRows(((DIALOGS&&DIALOGS.channels)||[]),{selected:WZ.targets,disabled:WZ.source?[WZ.source]:[]})}</div>`
+    :`<div class="empty" style="padding:1rem"><div class="ico">🔌</div><p>${esc((DIALOGS&&DIALOGS.error)||'Cannot browse channels')} — use the link field above instead.</p></div>`}`;
+  renderTgtChips();
 }
-window.wzUnpick=t=>{WZ.targets=WZ.targets.filter(x=>x!==t);wzStep3()};
-window.wzFilter3=q=>{document.querySelectorAll('#list3 .prow').forEach(r=>{const id=r.dataset.id;if(WZ.source===id)return;r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'flex':'none'})};
+window.wzUnpick=t=>{WZ.targets=WZ.targets.filter(x=>x!==t);renderTgtChips();document.querySelectorAll('#list3 .prow').forEach(r=>{if(r.dataset.id===t){r.classList.remove('sel');const c=r.querySelector('.check');if(c)c.checked=false}})};
+window.wzFilter3=q=>{document.querySelectorAll('#list3 .prow').forEach(r=>{if(r.dataset.id===WZ.source)return;r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'flex':'none'})};
+window.wzAddLinkTarget=()=>{
+  const el=$('#tgt-link');const v=(el.value||'').trim();
+  if(!v)return toast('Type a @username or link first','err');
+  if(WZ.targets.includes(v))return toast('Already added','err');
+  WZ.targets.push(v);el.value='';renderTgtChips();
+};
 
-// Rebind row clicks on step 3 to checkbox logic (pickRow handles both via WZ.step)
 function wzStep4(){
   setStep(4);
   $('#wz-body').innerHTML=`
@@ -403,51 +474,69 @@ async function wzCreate(){
       source:WZ.source,mode:WZ.mode,targets:WZ.targets,
       tracking:{enabled:WZ.tracking,intervalHours:WZ.intervalHours},
     })});
-    closeModal();toast(`${d.joined?'📡 Listening':'⚠️ Added (listen pending)'}: ${WZ.source}`,'ok');
+    closeModal();toast(`${d.joined?'📡 Listening':'⚠️ Added (listen pending)'}: ${d.source}`,'ok');
     refreshAll();
   }catch(e){toast(e.message,'err')}
 }
 
 // Wizard footers — injected per step
 const WIZ_FOOTERS={
-  1:`<button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" onclick="WZ.source?wzStep2():toast('Pick a source first','err')">Next →</button>`,
+  1:`<button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" onclick="wzNext1()">Next →</button>`,
   2:`<button class="btn btn-g" onclick="wzStep1()">← Back</button><button class="btn btn-p" onclick="wzStep3()">Next →</button>`,
   3:`<button class="btn btn-g" onclick="wzStep2()">← Back</button><button class="btn btn-p" onclick="WZ.targets.length?wzStep4():toast('Pick at least one target','err')">Next →</button>`,
-  4:`<button class="btn btn-g" onclick="wzStep3()">← Back</button><button class="btn btn-p" onclick="wzCreate()">✓ Create Channel</button>`,
+  4:`<button class="btn btn-g" onclick="wzStep3()">← Back</button><button class="btn btn-p" id="wz-create">✓ Create Channel</button>`,
 };
 function injectFooter(step){
   let f=$('#wz-foot');
   if(!f){f=document.createElement('div');f.className='modal-f';f.id='wz-foot';$('#modal').appendChild(f)}
   f.innerHTML=WIZ_FOOTERS[step];
+  const createBtn=$('#wz-create');
+  if(createBtn)createBtn.addEventListener('click',()=>wzCreate());
 }
-// Wrap the four step renderers so each also refreshes its footer
-for(const [name,fn] of [['wzStep1',wzStep1],['wzStep2',wzStep2],['wzStep3',wzStep3],['wzStep4',wzStep4]]){
-  const step=parseInt(name.slice(-1));
-  const wrapped=function(){fn();injectFooter(step)};
-  if(name==='wzStep1'){wzStep1=wrapped;window.wzStep1=wrapped}
-  else{window[name]=wrapped}
-}
+// Bind step renderers so each also refreshes its footer
+const _origSteps={s1:wzStep1,s2:wzStep2,s3:wzStep3,s4:wzStep4};
+window.wzStep1=function(){_origSteps.s1();injectFooter(1)};
+window.wzStep2=function(){_origSteps.s2();injectFooter(2)};
+window.wzStep3=function(){_origSteps.s3();injectFooter(3)};
+window.wzStep4=function(){_origSteps.s4();injectFooter(4)};
+window.wzNext1=wzNext1;
 
 // ── Add target (existing channel) ──
 window.openAddTarget=async function(src){
   openModal(`<div class="modal-h"><h2>🎯 Add Target</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="modal-b"><p class="hint" style="margin-bottom:.55rem">Only channels &amp; groups your account can access can be targets.</p>
-    <div class="skel" style="height:180px"></div></div>`);
+    <div class="modal-b" id="at-body"><p class="hint" style="margin-bottom:.55rem">New destination for <b style="color:var(--text2)">${esc(src)}</b>:</p><div class="skel" style="height:180px;border-radius:12px"></div></div>`);
   try{await loadDialogs()}catch(e){}
-  const list=(DIALOGS&&DIALOGS.channels||[]).filter(d=>d.identifier!==src);
-  $('#modal .modal-b').innerHTML=`
-    <p class="hint" style="margin-bottom:.55rem">New destination for <b style="color:var(--text2)">${esc(src)}</b>:</p>
-    <div class="search"><input placeholder="Search…" oninput="document.querySelectorAll('#at-list .prow').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(this.value.toLowerCase())?'flex':'none')"></div>
-    <div class="picker" id="at-list">${pickerRows(list,{})}</div>
+  renderAddTarget(src);
+};
+function renderAddTarget(src){
+  const ok=!!(DIALOGS&&DIALOGS.connected);
+  const list=ok?((DIALOGS.channels||[]).filter(d=>d.identifier!==src)):[];
+  $('#at-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem">New destination for <b style="color:var(--text2)">${esc(src)}</b> — pick, search, or paste a link:</p>
+    <div style="display:flex;gap:.4rem;margin-bottom:.55rem">
+      <input id="at-link" class="link-in" placeholder="@username / t.me link / +invite">
+      <button class="btn btn-g btn-sm" onclick="document.querySelector('#at-go').disabled=false">use ↵</button>
+    </div>
+    ${ok?`
+      <div class="search"><input placeholder="Search…" oninput="document.querySelectorAll('#at-list .prow').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(this.value.toLowerCase())?'flex':'none')"></div>
+      <div class="picker" id="at-list">${pickerRows(list,{})}</div>`
+    :`<div class="empty" style="padding:1rem"><div class="ico">🔌</div><p>${esc((DIALOGS&&DIALOGS.error)||'Cannot browse channels')} — paste a link above instead.</p></div>`}
     <div class="modal-f" style="padding:1rem 0 0"><button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" id="at-go" disabled>Add Target</button></div>`;
   let picked=null;
   document.querySelectorAll('#at-list .prow').forEach(r=>r.addEventListener('click',()=>{
     picked=r.dataset.id;
+    $('#at-link').value='';
     document.querySelectorAll('#at-list .prow').forEach(x=>x.classList.toggle('sel',x===r));
     $('#at-go').disabled=false;
   }));
+  $('#at-link').addEventListener('input',()=>{
+    if($('#at-link').value.trim()){picked=null;document.querySelectorAll('#at-list .prow').forEach(x=>x.classList.remove('sel'))}
+    $('#at-go').disabled=!$('#at-link').value.trim();
+  });
   $('#at-go').addEventListener('click',async()=>{
-    try{await api('/channels/'+encodeURIComponent(src)+'/targets',{method:'POST',body:JSON.stringify({target:picked})});closeModal();toast('🎯 Target added','ok');refreshAll()}
+    const target=picked||$('#at-link').value.trim();
+    if(!target)return;
+    try{await api('/channels/'+encodeURIComponent(src)+'/targets',{method:'POST',body:JSON.stringify({target})});closeModal();toast('🎯 Target added','ok');refreshAll()}
     catch(e){toast(e.message,'err')}
   });
 };

@@ -2,6 +2,7 @@ import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
 import { config } from './config.js';
+import { loadChannels } from './store.js';
 
 let client = null;
 let forwardHandler = null;
@@ -315,10 +316,48 @@ export function formatTokenSummary(data) {
 export async function initScraper(sessionStr) {
   const { apiId, apiHash } = config.telegram;
   const stringSession = new StringSession(sessionStr || '');
+  const prev = client;
   client = new TelegramClient(stringSession, apiId, apiHash, { connectionRetries: 5 });
+  if (prev) { try { await prev.disconnect(); } catch {} }
   await client.connect();
+  _listeners.clear();
+  _peerCache.clear();
+  invalidateDialogsCache();
   console.log('[Scraper] Connected');
   return client;
+}
+
+// ── Keep-alive watchdog: never let the scraper go silently dead ──
+let _kaTimer = null;
+let _kaBusy = false;
+let _pingFails = 0;
+
+export function startKeepAlive() {
+  if (_kaTimer) return;
+  _kaTimer = setInterval(async () => {
+    if (_kaBusy || !client) return;
+    try {
+      if (!client.connected) throw new Error('disconnected');
+      const { Api } = await import('telegram');
+      await withTimeout(client.invoke(new Api.Ping({ pingId: BigInt(Date.now()) })), 10_000, 'Ping');
+      _pingFails = 0;
+    } catch {
+      if (++_pingFails < 2) return;
+      _pingFails = 0;
+      _kaBusy = true;
+      try {
+        console.warn('[Scraper] Connection lost — reconnecting...');
+        await initScraper(config.telegram.session);
+        const chs = loadChannels();
+        for (const ch of Object.keys(chs)) await addChannelListener(ch).catch(() => {});
+        console.log(`[Scraper] ✅ Reconnected (${Object.keys(chs).length} listeners restored)`);
+      } catch (e) {
+        console.error('[Scraper] Reconnect failed:', e.message);
+      } finally {
+        _kaBusy = false;
+      }
+    }
+  }, 30_000);
 }
 
 export function getClient() {
@@ -331,10 +370,26 @@ export function isConnected() {
 
 // Channels & groups the connected account can actually access — the ONLY
 // valid sources/targets for forwarding (web picker is limited to these).
-export async function getAccessibleChannels() {
+// Cached for 60s so reopening the picker is instant; force=true bypasses.
+const _dialogsCache = { data: null, ts: 0 };
+const DIALOGS_TTL = 60_000;
+const DIALOGS_TIMEOUT = 20_000;
+
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out (${Math.round(ms / 1000)}s) — Telegram slow or disconnected`)), ms)),
+  ]);
+}
+
+export async function getAccessibleChannels(force = false) {
   if (!client) throw new Error('Telegram not connected');
-  const dialogs = await client.getDialogs({ limit: 100 });
-  return dialogs
+  const now = Date.now();
+  if (!force && _dialogsCache.data && now - _dialogsCache.ts < DIALOGS_TTL) {
+    return _dialogsCache.data;
+  }
+  const dialogs = await withTimeout(client.getDialogs({ limit: 100 }), DIALOGS_TIMEOUT, 'Fetching channels');
+  const channels = dialogs
     .filter(d => d.isChannel || d.isGroup)
     .map(d => {
       const broadcast = d.entity?.broadcast === true;
@@ -351,6 +406,43 @@ export async function getAccessibleChannels() {
       };
     })
     .sort((a, b) => b.participants - a.participants);
+  _dialogsCache.data = channels;
+  _dialogsCache.ts = now;
+  return channels;
+}
+
+export function invalidateDialogsCache() {
+  _dialogsCache.data = null;
+  _dialogsCache.ts = 0;
+}
+
+// Canonical storage key for an entity: prefer username, else marked "-100" id.
+function canonicalIdentifier(entity) {
+  if (entity?.username) return entity.username.replace(/^@/, '');
+  const raw = entity?.id?.value ?? entity?.id;
+  if (raw == null) throw new Error('Unresolvable channel');
+  let s = raw.toString();
+  if (/^\d+$/.test(s)) s = (entity.className === 'Chat' ? '-' : '-100') + s;
+  return s;
+}
+
+// Verify the account can access ANY identifier — from the dialog list first,
+// then by resolving/joining it live (covers invite links & fresh joins).
+export async function ensureAccessible(identifier) {
+  const norm = String(identifier || '').trim();
+  if (!norm) throw new Error('Empty channel identifier');
+  try {
+    const list = await getAccessibleChannels();
+    const hit = list.find(a => a.identifier.toLowerCase() === norm.toLowerCase()
+      || (a.username || '').toLowerCase() === normalizeInput(norm));
+    if (hit) return hit.identifier;
+  } catch { /* fall through to live resolve */ }
+  const entity = await resolveAndJoin(norm);
+  return canonicalIdentifier(entity);
+}
+
+function normalizeInput(s) {
+  return String(s).replace(/^https?:\/\/[^\s/]*\.?(telegram\.me|t\.me)\//i, '').replace(/^t\.me\//i, '').replace(/^@/, '');
 }
 
 // Resolve a marked numeric ID ("-100…") to a sendable entity. Cached.
