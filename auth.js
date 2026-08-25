@@ -38,6 +38,25 @@ export function signLinkToken(tid) {
   return signToken(tid, Date.now() + LINK_TTL);
 }
 
+// ── Long-lived device refresh tokens ("remember me") ────────────
+// Format: r.<tid>.<deviceId>.<exp>.<sig> — revocable by deleting the
+// device record server-side, so a lost laptop can be logged out remotely.
+const REFRESH_TTL = 180 * 24 * 3600 * 1000; // 180 days
+
+export function signRefresh(tid, deviceId, exp = Date.now() + REFRESH_TTL) {
+  const sig = crypto.createHmac('sha256', SECRET).update(`r:${tid}:${deviceId}:${exp}`).digest('hex').slice(0, 32);
+  return `r.${tid}.${deviceId}.${exp}.${sig}`;
+}
+
+export function verifyRefresh(token) {
+  const p = String(token || '').split('.');
+  if (p.length !== 5 || p[0] !== 'r') return null;
+  const [, tid, deviceId, exp] = p;
+  if (!tid || !deviceId || !/^\d+$/.test(exp) || Number(exp) < Date.now()) return null;
+  const sig = crypto.createHmac('sha256', SECRET).update(`r:${tid}:${deviceId}:${exp}`).digest('hex').slice(0, 32);
+  return sig === p[4] ? { tid, deviceId } : null;
+}
+
 export function publicBaseUrl() {
   return process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || process.env.BASE_WEB_URL || '';
 }

@@ -1,6 +1,7 @@
 import express from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import * as crypto from 'crypto';
 import {
   getAccessibleChannels,
   isConnected,
@@ -14,7 +15,7 @@ import {
 } from './scraper.js';
 import { loadUser, saveUser, deleteUser, channelTargets, logActivity, getActivity, normalizeIdentifier, getSession, saveSession, deleteSession } from './store.js';
 import { getActiveCount } from './tracking.js';
-import { WEB_PASSWORD, signToken, verifyToken, signLinkToken, publicBaseUrl } from './auth.js';
+import { WEB_PASSWORD, signToken, verifyToken, signLinkToken, signRefresh, verifyRefresh, publicBaseUrl } from './auth.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 
@@ -30,7 +31,13 @@ export function startWebServer() {
   app.post('/api/login', (req, res) => {
     if (!WEB_PASSWORD) return res.status(400).json({ error: 'Master password disabled' });
     if (String(req.body?.password || '') !== WEB_PASSWORD) return res.status(401).json({ error: 'Wrong password' });
-    res.json({ ok: true, token: signToken(getBootOwnerTid() || '_legacy') });
+    const ownerTid = getBootOwnerTid() || '_legacy';
+    let refresh = null;
+    if (req.body?.remember !== false) {
+      const deviceId = _registerDevice(ownerTid);
+      refresh = signRefresh(ownerTid, deviceId);
+    }
+    res.json({ ok: true, token: signToken(ownerTid), refresh });
   });
 
   app.get('/api/auth/options', (req, res) => {
@@ -105,7 +112,13 @@ export function startWebServer() {
 
       PENDING.delete(loginToken);
       logActivity('channel', `👤 @${me?.username || tid} logged in`);
-      res.json({ ok: true, token: signToken(tid), tid, username: me?.username || '' });
+      // Remember-me: register this browser as a revocable device
+      let refresh = null;
+      if (req.body?.remember !== false) {
+        const deviceId = _registerDevice(tid);
+        refresh = signRefresh(tid, deviceId);
+      }
+      res.json({ ok: true, token: signToken(tid), refresh, tid, username: me?.username || '' });
     } catch (err) {
       if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
         st.state = 'password';
@@ -129,12 +142,48 @@ export function startWebServer() {
     res.json({ masterPassword: !!WEB_PASSWORD, botUsername, publicUrl: publicBaseUrl() });
   });
 
+  // Register a "remember me" device for an account and mint its refresh token
+  const _registerDevice = (tid) => {
+    const sess = getSession(tid) || {};
+    const devices = sess.devices || {};
+    const deviceId = 'd' + crypto.randomBytes(8).toString('hex');
+    devices[deviceId] = { createdAt: Date.now() };
+    saveSession(tid, { devices });
+    return deviceId;
+  };
+
   // One-time hand-off: Telegram bot mints a short token → web exchanges it
   // for a standard session bound to the SAME telegram id.
   app.post('/api/auth/exchange', (req, res) => {
     const tid = verifyToken(String(req.body?.token || ''));
     if (!tid) return res.status(401).json({ error: 'Invalid or expired login link' });
-    res.json({ ok: true, token: signToken(tid), tid });
+    const deviceId = _registerDevice(tid);
+    res.json({ ok: true, token: signToken(tid), refresh: signRefresh(tid, deviceId), tid });
+  });
+
+  // Silent re-login from a remembered device — no OTP, no Telegram calls.
+  app.post('/api/auth/refresh', (req, res) => {
+    const dec = verifyRefresh(req.body?.refresh);
+    if (!dec) return res.status(401).json({ error: 'Invalid refresh token' });
+    const sess = getSession(dec.tid);
+    const dev = sess?.devices?.[dec.deviceId];
+    if (!dev) return res.status(401).json({ error: 'Device revoked — login again' });
+    // sliding window: both tokens renewed on each use
+    saveSession(dec.tid, { devices: { ...sess.devices, [dec.deviceId]: { ...dev, lastUsed: Date.now() } } });
+    res.json({ ok: true, token: signToken(dec.tid), refresh: signRefresh(dec.tid, dec.deviceId), tid: dec.tid });
+  });
+
+  // Revoke a remembered device (logout / stolen device)
+  app.post('/api/auth/revoke', (req, res) => {
+    const dec = verifyRefresh(req.body?.refresh);
+    if (!dec) return res.status(401).json({ error: 'Invalid refresh token' });
+    const sess = getSession(dec.tid);
+    if (sess?.devices?.[dec.deviceId]) {
+      const devices = { ...sess.devices };
+      delete devices[dec.deviceId];
+      saveSession(dec.tid, { devices });
+    }
+    res.json({ ok: true });
   });
 
   app.use('/api', (req, res, next) => {

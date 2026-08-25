@@ -129,6 +129,34 @@ test('web: auth required + users only ever see their own channels', async () => 
       body: JSON.stringify({ token: 'garbage' }),
     });
     assert.equal(r.status, 401);
+
+    // ── Remember me: device-bound refresh token lifecycle ──
+    store.saveSession('user-r', { devices: { dev1: { createdAt: Date.now() } } });
+    const { signRefresh } = await import('../auth.js');
+    const rt = signRefresh('user-r', 'dev1');
+
+    r = await fetch(base + '/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh: rt }),
+    });
+    d = await r.json();
+    assert.equal(d.ok, true, 'remembered device must silently re-login');
+    assert.ok(d.token && d.refresh);
+
+    r = await fetch(base + '/api/auth/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh: rt }),
+    });
+    assert.equal((await r.json()).ok, true);
+
+    r = await fetch(base + '/api/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh: rt }),
+    });
+    assert.equal(r.status, 401, 'revoked device must not re-login');
   } finally {
     server.close();
   }

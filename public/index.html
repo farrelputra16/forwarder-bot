@@ -228,7 +228,9 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
       <option value="5">SG Singapore</option>
     </select>
     <input id="lg-phone" placeholder="+62… phone number" autocomplete="off">
+    <label class="cb-row" style="border:none;padding:.15rem .2rem;cursor:pointer"><input type="checkbox" id="lg-remember" checked style="width:1rem;height:1rem;accent-color:var(--accent)"><span class="hint">✅ Remember me on this device — no repeated OTP</span></label>
     <button class="btn btn-p" onclick="authStart()" id="lg-btn">Send Code</button>
+    <div id="lg-saved-hint" class="hint" style="display:none;text-align:center;color:var(--text3)">Credentials saved on this device · <a href="#" onclick="forgetCreds()" style="color:var(--red)">Forget</a></div>
     <button class="btn btn-g" id="lg-open-bot" style="display:none;width:100%" onclick="window.open(lgBotUrl,'_blank')">✈️ Connect via Telegram Bot</button>
     <div id="lg-master-wrap" style="display:none;text-align:center">
       <div style="display:flex;align-items:center;gap:.5rem;color:var(--text3);font-size:.6rem"><div style="flex:1;height:1px;background:var(--border)"></div>or<div style="flex:1;height:1px;background:var(--border)"></div></div>
@@ -299,7 +301,11 @@ async function api(p,o={}){
     if(e.name==='AbortError')throw new Error('Request timed out — Telegram slow or offline. Try again or paste a link instead.');
     throw e;
   }finally{clearTimeout(to)}
-  if(r.status===401){localStorage.removeItem('fw_token');TOKEN='';showLock();throw new Error('unauthorized')}
+  if(r.status===401){
+    // remembered device? silently mint a fresh session and retry once
+    if(!o._retried&&await tryRefresh())return api(p,{...o,_retried:true});
+    localStorage.removeItem('fw_token');TOKEN='';showLock();throw new Error('unauthorized');
+  }
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.error||r.statusText);
   return d;
@@ -315,14 +321,24 @@ function lgStep(n){['#lg-step1','#lg-step2','#lg-step3'].forEach((s,i)=>{$(s).st
 
 window.doLogin=async function(){
   try{
-    const d=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#lock-pw').value})}).then(r=>r.json());
-    if(d.ok){TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);$('#lock').classList.remove('open');bootAfterAuth()}
+    const d=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#lock-pw').value,remember:true})}).then(r=>r.json());
+    if(d.ok){
+      TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);
+      if(d.refresh)localStorage.setItem('fw_refresh',d.refresh);
+      $('#lock').classList.remove('open');bootAfterAuth();
+    }
     else lgErr(d.error||'Wrong password');
   }catch(e){lgErr(e.message)}
 };
+function saveTokens(d){
+  TOKEN=d.token;localStorage.setItem('fw_token',d.token);
+  if(d.refresh)localStorage.setItem('fw_refresh',d.refresh);
+}
+window.forgetCreds=function(){localStorage.removeItem('fw_creds');$('#lg-saved-hint').style.display='none';toast('Saved credentials removed')};
 window.authStart=async function(){
   const btn=$('#lg-btn');btn.disabled=true;btn.textContent='Sending…';lgErr('');
   try{
+    localStorage.setItem('fw_remember',$('#lg-remember').checked?'1':'0');
     const d=await api('/auth/start',{method:'POST',body:JSON.stringify({
       apiId:$('#lg-api-id').value.trim(),apiHash:$('#lg-api-hash').value.trim(),
       phone:$('#lg-phone').value.trim(),dcId:$('#lg-dc').value,
@@ -338,15 +354,31 @@ window.authVerify=async function(){
   try{
     const d=await api('/auth/verify',{method:'POST',body:JSON.stringify({
       loginToken:LOGIN_TOKEN,code:$('#lg-code')?.value?.trim(),password:$('#lg-pass')?.value,
+      remember:localStorage.getItem('fw_remember')!=='0',
     })});
     if(d.twoFactor){lgStep(3);$('#lg-pass').focus();return}
-    TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);
+    saveTokens(d);
     $('#lock').classList.remove('open');
     toast(`👋 Welcome @${d.username||d.tid}`,'ok');
     bootAfterAuth();
   }catch(e){lgErr(e.message)}
 };
-window.doLogout=function(){localStorage.removeItem('fw_token');TOKEN='';location.reload()};
+// Silent re-login from a remembered device — no OTP, no Telegram calls
+let _refreshing=null;
+async function tryRefresh(){
+  const rt=localStorage.getItem('fw_refresh');
+  if(!rt)return false;
+  if(!_refreshing)_refreshing=fetch('/api/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh:rt})})
+    .then(async r=>{const d=await r.json().catch(()=>({}));if(r.ok&&d.ok){saveTokens(d);return true}localStorage.removeItem('fw_refresh');return false})
+    .catch(()=>false).finally(()=>setTimeout(()=>{_refreshing=null},100));
+  return _refreshing;
+}
+window.doLogout=async function(){
+  const rt=localStorage.getItem('fw_refresh');
+  if(rt){try{await fetch('/api/auth/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh:rt})})}catch{}}
+  ['fw_token','fw_refresh','fw_creds'].forEach(k=>localStorage.removeItem(k));
+  TOKEN='';location.reload();
+};
 let lgBotUrl='';
 async function showLock(){
   $('#lock').classList.add('open');
@@ -357,7 +389,7 @@ async function showLock(){
   }catch{}
   // restore saved creds for convenience
   try{const c=JSON.parse(localStorage.getItem('fw_creds')||'{}');
-    if(c.a){$('#lg-api-id').value=c.a;$('#lg-api-hash').value=c.h;$('#lg-dc').value=c.dc||'0';$('#lg-phone').value=c.p||''}
+    if(c.a){$('#lg-api-id').value=c.a;$('#lg-api-hash').value=c.h;$('#lg-dc').value=c.dc||'0';$('#lg-phone').value=c.p||'';$('#lg-saved-hint').style.display='block'}
   }catch{}
 }
 async function bootAfterAuth(){
@@ -682,7 +714,7 @@ function renderAddTarget(src){
   if(params.get('auth')){
     try{
       const d=await fetch('/api/auth/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:params.get('auth')})}).then(r=>r.json());
-      if(d.ok){TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);toast('🔗 Linked via Telegram','ok')}
+      if(d.ok){saveTokens(d);toast('🔗 Linked via Telegram','ok')}
     }catch{}
     history.replaceState(null,'',location.pathname);
   }
