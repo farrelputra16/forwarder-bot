@@ -26,9 +26,11 @@ body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:var(--bg);c
 ::selection{background:var(--accent);color:#fff}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
-input,select,textarea{font-family:inherit;color:var(--text);background:rgba(255,255,255,.045);border:1px solid var(--border);border-radius:10px;padding:.5rem .8rem;font-size:.8rem;outline:none;-webkit-appearance:none;appearance:none;transition:border-color .25s var(--spring)}
-input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+/* Text-like inputs only — checkboxes/radios must KEEP native rendering */
+input:not([type=checkbox]):not([type=radio]),select,textarea{font-family:inherit;color:var(--text);background:rgba(255,255,255,.045);border:1px solid var(--border);border-radius:10px;padding:.5rem .8rem;font-size:.8rem;outline:none;-webkit-appearance:none;appearance:none;transition:border-color .25s var(--spring)}
+input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{border-color:var(--accent)}
 input::placeholder{color:var(--text3)}
+input[type=checkbox],input[type=radio]{width:1.05rem;height:1.05rem;accent-color:var(--accent);cursor:pointer;flex-shrink:0}
 select{cursor:pointer}
 select option,select optgroup{background:#10121f;color:var(--text)}
 input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 60px #10121f inset;-webkit-text-fill-color:var(--text);caret-color:var(--text);transition:background-color 9999s ease-in-out 0s}
