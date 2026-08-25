@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forwarder Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#06070d;--card:#0c0e18;--card2:#10121f;
+  --border:rgba(255,255,255,.07);--border-hover:rgba(255,255,255,.14);
+  --text:#edeff7;--text2:#9a9cba;--text3:#565873;
+  --accent:#6c5ce7;--accent-h:#8b7cf7;--accent-bg:rgba(108,92,231,.13);
+  --green:#2ecc71;--green-bg:rgba(46,204,113,.12);
+  --red:#e74c3c;--red-bg:rgba(231,76,60,.11);
+  --yellow:#f1c40f;--cyan:#00cec9;--cyan-bg:rgba(0,206,201,.1);
+  --r-lg:16px;--r-md:12px;--r-sm:8px;
+  --spring:cubic-bezier(.34,.72,0,1);
+  --shadow:0 6px 28px rgba(0,0,0,.4);
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html{font-size:14px;-webkit-font-smoothing:antialiased}
+body{font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:radial-gradient(ellipse at 50% -10%,rgba(108,92,231,.09),transparent 55%),var(--bg);color:var(--text);min-height:100dvh}
+::selection{background:var(--accent);color:#fff}
+::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font-family:inherit;color:var(--text)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+/* ── Header ── */
+header{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:.75rem;padding:.85rem 1.5rem;background:rgba(6,7,13,.82);backdrop-filter:blur(24px);border-bottom:1px solid var(--border)}
+.logo{display:flex;align-items:center;gap:.55rem;font-weight:800;font-size:1rem;letter-spacing:-.02em}
+.logo .dot{width:1.9rem;height:1.9rem;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1rem;background:linear-gradient(135deg,var(--accent),#8b5cf6);box-shadow:0 3px 14px rgba(108,92,231,.4)}
+header .spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:.35rem;padding:.32rem .7rem;border-radius:9999px;font-size:.68rem;font-weight:600;border:1px solid var(--border)}
+.pill.on{color:var(--green);background:var(--green-bg);border-color:rgba(46,204,113,.25)}
+.pill.off{color:var(--red);background:var(--red-bg);border-color:rgba(231,76,60,.25)}
+.pulse{width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+main{max-width:1180px;margin:0 auto;padding:1.5rem}
+
+/* ── Stats ── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.6rem;margin-bottom:1.25rem}
+.stat{background:linear-gradient(160deg,rgba(255,255,255,.03),transparent),var(--card);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem 1rem;transition:border-color .3s var(--spring)}
+.stat:hover{border-color:var(--border-hover)}
+.stat .n{font-size:1.45rem;font-weight:800;letter-spacing:-.03em}
+.stat .l{font-size:.62rem;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.08em;margin-top:.15rem}
+
+/* ── Layout ── */
+.grid{display:grid;grid-template-columns:1fr 320px;gap:1rem;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r-lg);box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:.5rem;padding:.95rem 1.15rem;border-bottom:1px solid var(--border)}
+.card-h h3{font-size:.85rem;font-weight:700}
+.card-h .count{font-size:.65rem;color:var(--text3);background:rgba(255,255,255,.05);padding:.15rem .5rem;border-radius:9999px;font-weight:600}
+.card-b{padding:.9rem;display:flex;flex-direction:column;gap:.6rem}
+
+/* ── Buttons ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.35rem;padding:.52rem .95rem;border-radius:9999px;font-size:.76rem;font-weight:700;transition:all .25s var(--spring);white-space:nowrap}
+.btn-p{background:var(--accent);color:#fff;box-shadow:0 3px 14px rgba(108,92,231,.35)}
+.btn-p:hover{background:var(--accent-h);transform:translateY(-1px)}
+.btn-g{border:1px solid var(--border);color:var(--text2)}
+.btn-g:hover{border-color:var(--border-hover);color:var(--text)}
+.btn-d{color:var(--red)}
+.btn-d:hover{background:var(--red-bg)}
+.btn-sm{padding:.34rem .68rem;font-size:.68rem}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+
+/* ── Channel card ── */
+.chan{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-md);padding:.85rem .95rem;transition:all .25s var(--spring)}
+.chan:hover{border-color:var(--border-hover)}
+.chan.paused{opacity:.55}
+.chan-top{display:flex;align-items:flex-start;gap:.6rem;margin-bottom:.55rem}
+.chan-av{width:2.3rem;height:2.3rem;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1rem;color:#fff;background:linear-gradient(135deg,var(--accent),#8b5cf6)}
+.chan-name{flex:1;min-width:0}
+.chan-name b{display:block;font-size:.84rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chan-name span{font-size:.64rem;color:var(--text3);font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.badge{display:inline-flex;align-items:center;gap:.2rem;padding:.18rem .5rem;border-radius:9999px;font-size:.58rem;font-weight:700}
+.b-purple{background:var(--accent-bg);color:var(--accent-h)}
+.b-green{background:var(--green-bg);color:var(--green)}
+.b-cyan{background:var(--cyan-bg);color:var(--cyan)}
+.b-yellow{background:rgba(241,196,15,.12);color:var(--yellow)}
+.chan-actions{display:flex;gap:.3rem;flex-shrink:0}
+.icon-btn{width:1.85rem;height:1.85rem;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3);transition:all .2s}
+.icon-btn:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.icon-btn.danger:hover{background:var(--red-bg);color:var(--red)}
+
+.tgt-row{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.tgt-label{font-size:.62rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.07em;margin-right:.1rem}
+.tgt-chip{display:inline-flex;align-items:center;gap:.3rem;padding:.22rem .55rem;border-radius:9999px;font-size:.66rem;font-weight:600;background:rgba(255,255,255,.04);border:1px solid var(--border);font-family:'JetBrains Mono',monospace;max-width:220px}
+.tgt-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tgt-chip button{color:var(--text3);font-size:.7rem;line-height:1}
+.tgt-chip button:hover{color:var(--red)}
+.add-tgt{padding:.22rem .6rem;border-radius:9999px;font-size:.64rem;font-weight:700;color:var(--accent-h);border:1px dashed rgba(108,92,231,.45)}
+.add-tgt:hover{background:var(--accent-bg)}
+
+.meta-row{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;margin-top:.5rem;padding-top:.5rem;border-top:1px solid rgba(255,255,255,.04)}
+.switch{position:relative;width:2rem;height:1.1rem;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.switch .sl{position:absolute;inset:0;background:rgba(255,255,255,.1);border-radius:9999px;transition:.3s var(--spring);cursor:pointer}
+.switch .sl::before{content:'';position:absolute;width:.82rem;height:.82rem;left:.14rem;top:.14rem;background:#fff;border-radius:50%;transition:.3s var(--spring)}
+.switch input:checked+.sl{background:var(--green)}
+.switch input:checked+.sl::before{transform:translateX(.9rem)}
+.meta-item{display:inline-flex;align-items:center;gap:.3rem;font-size:.64rem;color:var(--text3);font-weight:600}
+
+/* ── Activity ── */
+.act-list{max-height:520px;overflow-y:auto;display:flex;flex-direction:column}
+.act{display:flex;gap:.55rem;padding:.5rem .95rem;border-bottom:1px solid rgba(255,255,255,.035);font-size:.72rem;align-items:flex-start}
+.act:last-child{border:none}
+.act .ico{flex-shrink:0}
+.act .tx{flex:1;color:var(--text2);word-break:break-word}
+.act .tm{flex-shrink:0;color:var(--text3);font-size:.6rem;font-family:'JetBrains Mono',monospace}
+.empty{text-align:center;padding:2.2rem 1rem;color:var(--text3)}
+.empty .ico{font-size:2rem;margin-bottom:.4rem}
+.empty p{font-size:.74rem;line-height:1.5}
+
+/* ── Modal ── */
+.overlay{position:fixed;inset:0;z-index:100;background:rgba(3,4,10,.78);backdrop-filter:blur(20px);display:none;align-items:center;justify-content:center;padding:1rem}
+.overlay.open{display:flex}
+.modal{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--border);border-radius:20px;width:min(560px,94vw);max-height:88dvh;overflow-y:auto;box-shadow:0 24px 70px rgba(0,0,0,.6);animation:pop .35s var(--spring)}
+@keyframes pop{from{transform:translateY(14px) scale(.98);opacity:0}}
+.modal-h{padding:1.1rem 1.25rem .8rem;display:flex;align-items:center;gap:.6rem}
+.modal-h h2{font-size:1rem;font-weight:800;letter-spacing:-.01em;flex:1}
+.steps{display:flex;gap:.3rem;padding:0 1.25rem .8rem}
+.step-dot{height:4px;flex:1;border-radius:99px;background:rgba(255,255,255,.07);transition:background .3s}
+.step-dot.on{background:var(--accent)}
+.modal-b{padding:0 1.25rem 1.1rem}
+.modal-f{display:flex;gap:.5rem;padding:0 1.25rem 1.15rem}
+.modal-f .btn{flex:1}
+
+/* ── Picker rows ── */
+.search{display:flex;align-items:center;gap:.45rem;padding:.5rem .85rem;border-radius:9999px;border:1px solid var(--border);background:rgba(255,255,255,.03);margin-bottom:.6rem;transition:border-color .25s}
+.search:focus-within{border-color:var(--accent)}
+.search input{flex:1;background:none;border:none;outline:none;font-size:.78rem}
+.picker{max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r-md)}
+.prow{display:flex;align-items:center;gap:.6rem;padding:.5rem .7rem;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.035);transition:background .15s}
+.prow:last-child{border:none}
+.prow:hover{background:rgba(108,92,231,.08)}
+.prow.sel{background:var(--accent-bg)}
+.prow.dis{opacity:.4;cursor:default}
+.pav{width:2rem;height:2rem;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem;color:#fff;background:linear-gradient(135deg,var(--accent),#8b5cf6)}
+.prow[data-type="group"] .pav{background:linear-gradient(135deg,#00b894,#00cec9)}
+.pin{flex:1;min-width:0}
+.pin b{display:block;font-size:.76rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pin small{font-size:.6rem;color:var(--text3);font-family:'JetBrains Mono',monospace;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.check{width:1.15rem;height:1.15rem;flex-shrink:0;accent-color:var(--accent)}
+.hint{font-size:.66rem;color:var(--text3);line-height:1.5}
+.mode-card{display:flex;gap:.7rem;align-items:flex-start;padding:.8rem .9rem;border:1px solid var(--border);border-radius:var(--r-md);cursor:pointer;transition:all .25s var(--spring)}
+.mode-card:hover{border-color:var(--border-hover)}
+.mode-card.sel{border-color:var(--accent);background:var(--accent-bg)}
+.mode-card .mi{font-size:1.3rem}
+.mode-card b{display:block;font-size:.78rem;margin-bottom:.15rem}
+.mode-card p{font-size:.64rem;color:var(--text3);line-height:1.45}
+.sel-chips{display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.6rem}
+.field label{display:block;font-size:.68rem;font-weight:700;color:var(--text2);margin-bottom:.35rem}
+.field input[type=number],.field select{width:100%;padding:.5rem .8rem;border-radius:var(--r-sm);border:1px solid var(--border);background:rgba(255,255,255,.03);font-size:.78rem;outline:none}
+.field input:focus,.field select:focus{border-color:var(--accent)}
+.cb-row{display:flex;align-items:center;gap:.55rem;padding:.7rem .85rem;border:1px solid var(--border);border-radius:var(--r-md);cursor:pointer}
+.cb-row input{width:1.05rem;height:1.05rem;accent-color:var(--accent)}
+
+/* ── Toast ── */
+.toasts{position:fixed;bottom:1.2rem;right:1.2rem;z-index:200;display:flex;flex-direction:column;gap:.45rem}
+.toast{padding:.6rem 1rem;border-radius:12px;font-size:.75rem;font-weight:600;background:var(--card2);border:1px solid var(--border);box-shadow:var(--shadow);animation:slideIn .35s var(--spring);max-width:320px}
+.toast.ok{border-color:rgba(46,204,113,.4)}
+.toast.err{border-color:rgba(231,76,60,.45)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}}
+
+/* ── Skeletons ── */
+.skel{border-radius:8px;background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.09) 50%,rgba(255,255,255,.04) 75%);background-size:200% 100%;animation:shim 1.3s infinite linear}
+@keyframes shim{from{background-position:200% 0}to{background-position:-200% 0}}
+
+/* ── Lock screen ── */
+.lock{position:fixed;inset:0;z-index:300;background:var(--bg);display:none;flex-direction:column;align-items:center;justify-content:center;gap:1rem;padding:1.5rem}
+.lock.open{display:flex}
+.lock input{width:280px;max-width:80vw;padding:.7rem 1rem;border-radius:12px;border:1px solid var(--border);background:var(--card);text-align:center;font-size:.9rem;outline:none}
+.lock input:focus{border-color:var(--accent)}
+@media(max-width:640px){header{padding:.75rem .9rem}main{padding:1rem .75rem}.modal-f{flex-direction:column-reverse}.toasts{left:.75rem;right:.75rem}.toast{max-width:none}}
+</style>
+</head>
+<body>
+
+<div class="lock" id="lock">
+  <div style="font-size:2.4rem">🔐</div>
+  <h1 style="font-size:1.1rem;font-weight:800">Forwarder Bot</h1>
+  <p class="hint" style="text-align:center">Enter the dashboard password to continue.</p>
+  <input id="lock-pw" type="password" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()">
+  <button class="btn btn-p" onclick="doLogin()" style="width:280px;max-width:80vw">Unlock</button>
+  <p id="lock-err" class="hint" style="color:var(--red);display:none"></p>
+</div>
+
+<header>
+  <div class="logo"><span class="dot">📨</span> Forwarder Bot</div>
+  <div class="spacer"></div>
+  <span class="pill off" id="conn-pill"><span class="pulse"></span> Checking…</span>
+  <button class="btn btn-g btn-sm" onclick="refreshAll()" title="Refresh">↻</button>
+</header>
+
+<main>
+  <div class="stats" id="stats"></div>
+  <div class="grid">
+    <section class="card">
+      <div class="card-h"><h3>📡 Forward Channels</h3><span class="count" id="chan-count">…</span><div style="flex:1"></div><button class="btn btn-p btn-sm" onclick="openWizard()">＋ Add Channel</button></div>
+      <div class="card-b" id="chans"><div class="skel" style="height:86px"></div><div class="skel" style="height:86px"></div></div>
+    </section>
+    <aside class="card">
+      <div class="card-h"><h3>⚡ Live Activity</h3></div>
+      <div class="act-list" id="acts"><div class="empty"><div class="ico">🛰️</div><p>Waiting for forwards…<br>New events appear here live.</p></div></div>
+    </aside>
+  </div>
+</main>
+
+<div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+<div class="toasts" id="toasts"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+let TOKEN=localStorage.getItem('fw_token')||'';
+let DIALOGS=null;
+
+function toast(m,t=''){const e=document.createElement('div');e.className='toast '+t;e.textContent=m;$('#toasts').appendChild(e);setTimeout(()=>{e.style.opacity='0';e.style.transition='opacity .3s';setTimeout(()=>e.remove(),320)},3000)}
+async function api(p,o={}){
+  const h={'Content-Type':'application/json'};
+  if(TOKEN)h['x-web-token']=TOKEN;
+  const r=await fetch('/api'+p,{headers:h,...o});
+  if(r.status===401){localStorage.removeItem('fw_token');TOKEN='';$('#lock').classList.add('open');throw new Error('unauthorized')}
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.error||r.statusText);
+  return d;
+}
+const esc=s=>s?String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]):'';
+const av=t=>(t||'?').trim().charAt(0).toUpperCase()||'?';
+const ago=ts=>{const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h'};
+
+// ── Auth gate ──
+async function doLogin(){
+  try{
+    const d=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('#lock-pw').value})}).then(r=>r.json());
+    if(d.ok){TOKEN=d.token;localStorage.setItem('fw_token',TOKEN);$('#lock').classList.remove('open');refreshAll()}
+    else{$('#lock-err').textContent=d.error||'Wrong password';$('#lock-err').style.display='block'}
+  }catch(e){$('#lock-err').textContent=e.message;$('#lock-err').style.display='block'}
+}
+
+// ── Renderers ──
+async function refreshAll(){try{
+  const [st]=await Promise.all([api('/status')]);
+  const cp=$('#conn-pill');
+  cp.className='pill '+(st.connected?'on':'off');
+  cp.innerHTML=`<span class="pulse"></span> ${st.connected?'Telegram Connected':'Telegram Offline'}`;
+  const s=st.stats;
+  $('#stats').innerHTML=[
+    ['📡',s.total,'Sources'],['🟢',s.active,'Active'],['📋',s.extract,'Extract'],['📨',s.forward,'Forward'],['📊',s.tracking,'Tracking']
+  ].map(([i,n,l])=>`<div class="stat"><div class="n">${n}</div><div class="l">${i} ${l}</div></div>`).join('');
+  await Promise.all([renderChans(),renderActs()]);
+}catch(e){console.error(e)}}
+
+async function renderChans(){
+  const chans=await api('/channels').catch(()=>[]);
+  $('#chan-count').textContent=chans.length+' channel'+(chans.length!==1?'s':'');
+  const el=$('#chans');
+  if(!chans.length){el.innerHTML=`<div class="empty"><div class="ico">📭</div><p>No channels yet.<br>Add a source and pick targets your account can access.</p><button class="btn btn-p" style="margin-top:.8rem" onclick="openWizard()">＋ Add Your First Channel</button></div>`;return}
+  el.innerHTML=chans.map(c=>{
+    const mode=c.mode==='extract'
+      ?'<span class="badge b-cyan">📋 Extract CA</span>'
+      :'<span class="badge b-purple">📨 Forward All</span>';
+    const trk=c.tracking&&c.tracking.enabled?`<span class="badge b-green">📊 ${c.tracking.multipliers.join('/')}X · ${c.tracking.intervalHours}h</span>`:'';
+    return`<div class="chan ${c.active?'':'paused'}" data-src="${esc(c.source)}">
+      <div class="chan-top">
+        <div class="chan-av">${esc(av(c.source))}</div>
+        <div class="chan-name"><b>${esc(c.source)}</b><span>${esc(c.source)}</span></div>
+        <div class="chan-actions">
+          <button class="icon-btn danger" title="Delete" onclick="delChan('${esc(c.source)}')">🗑</button>
+        </div>
+      </div>
+      <div class="tgt-row"><span class="tgt-label">→ Targets</span>
+        ${c.targets.map(t=>`<span class="tgt-chip" title="${esc(t)}"><span>${esc(t)}</span><button onclick="rmTarget('${esc(c.source)}','${esc(t)}')">×</button></span>`).join('')}
+        <button class="add-tgt" onclick="openAddTarget('${esc(c.source)}')">＋ target</button>
+      </div>
+      <div class="meta-row">
+        <label class="switch" title="${c.active?'Pause':'Resume'}"><input type="checkbox" ${c.active?'checked':''} onchange="chanAction('${esc(c.source)}','toggle')"><span class="sl"></span></label>
+        <span class="meta-item">${c.active?'Active':'Paused'}</span>
+        ${mode}
+        <label class="switch" title="Ignore duplicate CAs"><input type="checkbox" ${c.ignoreDuplicate?'checked':''} onchange="chanAction('${esc(c.source)}','dup')"><span class="sl"></span></label>
+        <span class="meta-item">🔁 Dup ignore</span>
+        ${trk||''}
+      </div>
+    </div>`}).join('');
+}
+
+const ACT_ICO={forward:'📨',ca:'⚡',channel:'📡'};
+async function renderActs(){
+  const acts=await api('/activity').catch(()=>[]);
+  $('#acts').innerHTML=acts.length?acts.map(a=>`<div class="act"><span class="ico">${ACT_ICO[a.type]||'•'}</span><span class="tx">${esc(a.text)}</span><span class="tm">${ago(a.ts)}</span></div>`).join('')
+    :'<div class="empty"><div class="ico">🛰️</div><p>Waiting for forwards…<br>New events appear here live.</p></div>';
+}
+
+// ── Channel actions ──
+window.chanAction=async(src,action)=>{try{await api('/channels/'+encodeURIComponent(src),{method:'PATCH',body:JSON.stringify({action})});refreshAll()}catch(e){toast(e.message,'err')}};
+window.rmTarget=async(src,t)=>{try{await api('/channels/'+encodeURIComponent(src)+'/targets?target='+encodeURIComponent(t),{method:'DELETE'});toast('Target removed');refreshAll()}catch(e){toast(e.message,'err')}};
+window.delChan=async src=>{if(!confirm(`Delete ${src}? Forwarding stops immediately.`))return;try{await api('/channels/'+encodeURIComponent(src),{method:'DELETE'});toast('Channel deleted');refreshAll()}catch(e){toast(e.message,'err')}};
+
+// ── Dialog picker (accessible-only) ──
+async function loadDialogs(force){
+  if(DIALOGS&&!force)return DIALOGS;
+  DIALOGS=await api('/dialogs');
+  return DIALOGS;
+}
+function pickerRows(list,{selected=[],disabled=[],single=false}={}){
+  return list.filter(d=>!ql||d.title.toLowerCase().includes(ql)||(d.username||'').toLowerCase().includes(ql)).map(d=>{
+    const sel=selected.includes(d.identifier);
+    const dis=!sel&&disabled.includes(d.identifier);
+    return`<div class="prow ${sel?'sel':''} ${dis?'dis':''}" data-id="${esc(d.identifier)}" data-type="${d.type}" ${dis?'':`onclick="pickRow(this)"`}>
+      <div class="pav">${esc(av(d.title))}</div>
+      <div class="pin"><b>${esc(d.title)}</b><small>${d.username?'@'+esc(d.username):'private · '+esc(d.id)}${d.participants?' · '+d.participants:''}</small></div>
+      <span class="badge ${d.type==='group'?'b-green':'b-purple'}" style="font-size:.53rem">${d.type==='group'?'👥':'📢'}</span>
+      <input type="${single?'radio':'checkbox'}" class="check" ${sel?'checked':''} tabindex="-1" onclick="event.stopPropagation()">
+    </div>`}).join('')||'<div class="empty"><div class="ico">🔍</div><p>No matches</p></div>';
+}
+// ── Add Channel wizard ──
+let WZ=null;
+window.openWizard=async function(){
+  WZ={step:1,source:null,mode:'extract',targets:[],tracking:false,intervalHours:1};
+  openModal(`<div class="modal-h"><h2>＋ Add Forward Channel</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="steps">${[1,2,3,4].map(i=>`<div class="step-dot ${i<=WZ.step?'on':''}"></div>`).join('')}</div>
+    <div class="modal-b" id="wz-body"><div class="skel" style="height:200px"></div></div>`);
+  try{await loadDialogs(true)}catch(e){}
+  if(!DIALOGS||!DIALOGS.connected){$('#wz-body').innerHTML=`<div class="empty"><div class="ico">🔌</div><p><b>Telegram not connected.</b><br>The bot's account must be online to browse accessible channels. Check the connection pill up top or restart the server.</p></div><div class="modal-f" style="padding:0"><button class="btn btn-g" onclick="closeModal()">Close</button></div>`;return}
+  wzStep1();
+};
+function openModal(h){$('#modal').innerHTML=h;$('#overlay').classList.add('open')}
+window.closeModal=()=>{$('#overlay').classList.remove('open')};
+$('#overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal()});
+function setStep(n){document.querySelectorAll('.step-dot').forEach((d,i)=>d.classList.toggle('on',i<n))}
+
+function wzStep1(){
+  setStep(1);
+  $('#wz-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 1 — Source.</b> Only channels & groups your Telegram account has joined are listed.</p>
+    <div class="search"><input id="q1" placeholder="Search…" oninput="wzFilter1(this.value)"></div>
+    <div class="picker" id="list1">${pickerRows(DIALOGS.channels,{selected:WZ.source?[WZ.source]:[],single:true})}</div>`;
+}
+window.wzFilter1=q=>{document.querySelectorAll('#list1 .prow').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'flex':'none')};
+window.pickRow=el=>{
+  const id=el.dataset.id;
+  if(WZ.step===1){WZ.source=id;document.querySelectorAll('#list1 .prow').forEach(r=>{r.classList.toggle('sel',r===el);const c=r.querySelector('.check');c.checked=r===el})}
+  else{
+    const cb=el.querySelector('.check');
+    if(cb.checked){WZ.targets=WZ.targets.filter(t=>t!==id)}else{WZ.targets.push(id)}
+    cb.checked=!cb.checked;el.classList.toggle('sel');
+  }
+};
+function wzNext1(){
+  if(!WZ.source)return toast('Pick a source channel first','err');
+  wzStep2();
+}
+function wzStep2(){
+  setStep(2);
+  $('#wz-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 2 — Mode.</b> What happens to messages from <b>${esc(WZ.source)}</b>?</p>
+    <div style="display:flex;flex-direction:column;gap:.45rem">
+      <div class="mode-card ${WZ.mode==='extract'?'sel':''}" data-m="extract" onclick="wzMode(this)"><span class="mi">📋</span><div><b>Extract CA</b><p>Detect contract addresses (Solana & EVM), forward a NEW CALL card with live MC/liquidity from DexScreener, and optionally track price multipliers.</p></div></div>
+      <div class="mode-card ${WZ.mode==='forward'?'sel':''}" data-m="forward" onclick="wzMode(this)"><span class="mi">📨</span><div><b>Forward All</b><p>Relay every message from the source to your targets untouched.</p></div></div>
+    </div>`;
+}
+window.wzMode=el=>{WZ.mode=el.dataset.m;document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('sel',c===el))};
+function wzStep3(){
+  setStep(3);
+  $('#wz-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 3 — Targets.</b> Pick one or more destinations — limited to what your account can access.</p>
+    <div class="sel-chips" id="tgt-chips">${WZ.targets.map(t=>`<span class="tgt-chip"><span>${esc(t)}</span><button onclick="wzUnpick('${esc(t)}')">×</button></span>`).join('')||'<span class="hint">Nothing selected yet</span>'}</div>
+    <div class="search"><input placeholder="Search…" oninput="wzFilter3(this.value)"></div>
+    <div class="picker" id="list3">${pickerRows(DIALOGS.channels,{selected:WZ.targets,disabled:WZ.source?[WZ.source]:[]})}</div>`;
+}
+window.wzUnpick=t=>{WZ.targets=WZ.targets.filter(x=>x!==t);wzStep3()};
+window.wzFilter3=q=>{document.querySelectorAll('#list3 .prow').forEach(r=>{const id=r.dataset.id;if(WZ.source===id)return;r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'flex':'none'})};
+
+// Rebind row clicks on step 3 to checkbox logic (pickRow handles both via WZ.step)
+function wzStep4(){
+  setStep(4);
+  $('#wz-body').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem"><b style="color:var(--text2)">Step 4 — Tracking.</b> Optional price alerts for extracted tokens.</p>
+    <label class="cb-row" style="margin-bottom:.5rem"><input type="checkbox" id="wz-track" ${WZ.tracking?'checked':''} onchange="WZ.tracking=this.checked;$('#wz-int-wrap').style.display=this.checked?'block':'none'">
+      <div><b style="font-size:.76rem">📊 Enable tracking alerts</b><div class="hint">2X/3X/5X/10X multiplier alerts + periodic MC updates to the first target.</div></div></label>
+    <div id="wz-int-wrap" class="field" style="display:${WZ.tracking?'block':'none'};margin-top:.4rem">
+      <label>Update interval (hours)</label>
+      <input type="number" min="1" value="${WZ.intervalHours}" oninput="WZ.intervalHours=Math.max(1,parseInt(this.value)||1)">
+    </div>
+    <div class="card" style="margin-top:.7rem;padding:.7rem .85rem;background:var(--card)">
+      <div class="meta-item" style="font-size:.68rem;line-height:1.8">
+        📡 Source: <b style="color:var(--text)">&nbsp;${esc(WZ.source)}</b><br>
+        ${WZ.mode==='extract'?'📋 Extract CA':'📨 Forward All'}<br>
+        🎯 Targets: <b style="color:var(--text)">&nbsp;${esc(WZ.targets.join(', '))||'—'}</b>
+      </div>
+    </div>`;
+}
+async function wzCreate(){
+  if(!WZ.targets.length)return toast('Pick at least one target','err');
+  try{
+    const d=await api('/channels',{method:'POST',body:JSON.stringify({
+      source:WZ.source,mode:WZ.mode,targets:WZ.targets,
+      tracking:{enabled:WZ.tracking,intervalHours:WZ.intervalHours},
+    })});
+    closeModal();toast(`${d.joined?'📡 Listening':'⚠️ Added (listen pending)'}: ${WZ.source}`,'ok');
+    refreshAll();
+  }catch(e){toast(e.message,'err')}
+}
+
+// Wizard footers — injected per step
+const WIZ_FOOTERS={
+  1:`<button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" onclick="WZ.source?wzStep2():toast('Pick a source first','err')">Next →</button>`,
+  2:`<button class="btn btn-g" onclick="wzStep1()">← Back</button><button class="btn btn-p" onclick="wzStep3()">Next →</button>`,
+  3:`<button class="btn btn-g" onclick="wzStep2()">← Back</button><button class="btn btn-p" onclick="WZ.targets.length?wzStep4():toast('Pick at least one target','err')">Next →</button>`,
+  4:`<button class="btn btn-g" onclick="wzStep3()">← Back</button><button class="btn btn-p" onclick="wzCreate()">✓ Create Channel</button>`,
+};
+function injectFooter(step){
+  let f=$('#wz-foot');
+  if(!f){f=document.createElement('div');f.className='modal-f';f.id='wz-foot';$('#modal').appendChild(f)}
+  f.innerHTML=WIZ_FOOTERS[step];
+}
+// Wrap the four step renderers so each also refreshes its footer
+for(const [name,fn] of [['wzStep1',wzStep1],['wzStep2',wzStep2],['wzStep3',wzStep3],['wzStep4',wzStep4]]){
+  const step=parseInt(name.slice(-1));
+  const wrapped=function(){fn();injectFooter(step)};
+  if(name==='wzStep1'){wzStep1=wrapped;window.wzStep1=wrapped}
+  else{window[name]=wrapped}
+}
+
+// ── Add target (existing channel) ──
+window.openAddTarget=async function(src){
+  openModal(`<div class="modal-h"><h2>🎯 Add Target</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
+    <div class="modal-b"><p class="hint" style="margin-bottom:.55rem">Only channels &amp; groups your account can access can be targets.</p>
+    <div class="skel" style="height:180px"></div></div>`);
+  try{await loadDialogs()}catch(e){}
+  const list=(DIALOGS&&DIALOGS.channels||[]).filter(d=>d.identifier!==src);
+  $('#modal .modal-b').innerHTML=`
+    <p class="hint" style="margin-bottom:.55rem">New destination for <b style="color:var(--text2)">${esc(src)}</b>:</p>
+    <div class="search"><input placeholder="Search…" oninput="document.querySelectorAll('#at-list .prow').forEach(r=>r.style.display=r.textContent.toLowerCase().includes(this.value.toLowerCase())?'flex':'none')"></div>
+    <div class="picker" id="at-list">${pickerRows(list,{})}</div>
+    <div class="modal-f" style="padding:1rem 0 0"><button class="btn btn-g" onclick="closeModal()">Cancel</button><button class="btn btn-p" id="at-go" disabled>Add Target</button></div>`;
+  let picked=null;
+  document.querySelectorAll('#at-list .prow').forEach(r=>r.addEventListener('click',()=>{
+    picked=r.dataset.id;
+    document.querySelectorAll('#at-list .prow').forEach(x=>x.classList.toggle('sel',x===r));
+    $('#at-go').disabled=false;
+  }));
+  $('#at-go').addEventListener('click',async()=>{
+    try{await api('/channels/'+encodeURIComponent(src)+'/targets',{method:'POST',body:JSON.stringify({target:picked})});closeModal();toast('🎯 Target added','ok');refreshAll()}
+    catch(e){toast(e.message,'err')}
+  });
+};
+
+// ── Boot ──
+refreshAll().catch(()=>{});
+setInterval(refreshAll,5000);
+</script>
+</body>
+</html>

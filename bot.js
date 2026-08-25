@@ -1,14 +1,10 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import fs from 'fs';
 import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
+import { loadChannels, saveChannels } from './store.js';
 
 export const bot = new Telegraf(config.botToken);
-
-const DB_FILE = './channels.json';
-const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
-const saveChannels = (channels) => fs.writeFileSync(DB_FILE, JSON.stringify(channels));
 
 const userState = new Map();
 const PER_PAGE = 5;

@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test --test-force-exit test/store.test.mjs"
   },
   "dependencies": {
-    "telegram": "^2.22.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
     "telegraf": "^4.16.3",
-    "dotenv": "^16.4.5"
+    "telegram": "^2.22.0"
   }
 }

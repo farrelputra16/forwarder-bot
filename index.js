@@ -2,27 +2,27 @@ import { bot } from './bot.js';
 import { initScraper, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt } from './scraper.js';
 import { config } from './config.js';
 import { initTrackings, addTracking } from './tracking.js';
-import fs from 'fs';
-import http from 'http';
-
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot is running');
-}).listen(process.env.PORT || 3000, () => {
-  console.log(`HTTP server listening on port ${process.env.PORT || 3000}`);
-});
+import { startWebServer } from './web.js';
+import { loadChannels, saveChannels, logActivity } from './store.js';
 
 await initScraper(config.telegram.session);
 initTrackings();
+startWebServer();
 
-const DB_FILE = './channels.json';
-const loadChannels = () => fs.existsSync(DB_FILE) ? JSON.parse(fs.readFileSync(DB_FILE)) : {};
-const saveChannels = (channels) => fs.writeFileSync(DB_FILE, JSON.stringify(channels));
+// Forwarding Logic — hot path: zero blocking IO, targets fanned out in parallel
+const sendAll = async (targets, text, parseMode) => {
+  const results = await Promise.allSettled(targets.map(t => forwardMessage(t, text, parseMode)));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.error(`[Forward] → ${targets[i]} failed: ${r.reason?.message || r.reason}`);
+      logActivity('error', `⚠️ Gagal kirim ke ${targets[i]}: ${r.reason?.message || r.reason}`);
+    }
+  });
+};
 
-// Forwarding Logic
 onMessage(async (sourceChannel, message) => {
   if (!message.text) return;
-  
+
   const channels = loadChannels();
   const channelInfo = channels[sourceChannel];
   if (!channelInfo || !channelInfo.active) return;
@@ -30,26 +30,30 @@ onMessage(async (sourceChannel, message) => {
   const targets = channelInfo.targets || (channelInfo.target ? [channelInfo.target] : [config.targetChannel]);
 
   if (channelInfo.mode === 'forward') {
-    for (const t of targets) await forwardMessage(t, message.text);
+    await sendAll(targets, message.text);
+    logActivity('forward', `📨 ${sourceChannel} → ${targets.join(', ')}`);
   } else if (channelInfo.mode === 'extract') {
     const cas = [...extractAddresses(message.text), ...extractEVMAddresses(message.text)];
     if (!cas.length) return;
 
     for (const ca of cas) {
+      let isDup = false;
       if (channelInfo.ignoreDuplicate) {
         if (!channelInfo.seenCAs) channelInfo.seenCAs = [];
-        if (channelInfo.seenCAs.includes(ca)) continue;
-        channelInfo.seenCAs.push(ca);
-        saveChannels(channels);
+        if (channelInfo.seenCAs.includes(ca)) { isDup = true; }
+        else {
+          channelInfo.seenCAs.push(ca);
+          saveChannels(channels); // async — never blocks the loop
+        }
       }
+      if (isDup) continue;
 
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
-      for (const t of targets) await forwardMessage(t, msg1, 'html');
+      await sendAll(targets, msg1, 'html');
 
       const dexInfo = await fetchDexScreenerInfo(ca);
       if (dexInfo) {
         const mc = fmt(dexInfo.marketCap || 0);
-        const p = parseFloat(dexInfo.price);
         const chg = dexInfo.priceChange1h !== undefined
           ? (dexInfo.priceChange1h > 0 ? `📈 +${dexInfo.priceChange1h.toFixed(1)}%` : `📉 ${dexInfo.priceChange1h.toFixed(1)}%`)
           : '';
@@ -60,7 +64,8 @@ onMessage(async (sourceChannel, message) => {
                      `💰 MC ${mc}  │  💧 Liq ${fmt(dexInfo.liquidity || 0)}\n` +
                      `📊 1h Vol ${fmt(dexInfo.volume1h || 0)}  │  24h Vol ${fmt(dexInfo.volume24h || 0)}\n\n` +
                      `🧠 0 Smart Money  ·  🏆 0 KOL`;
-        for (const t of targets) await forwardMessage(t, msg2, 'html');
+        await sendAll(targets, msg2, 'html');
+        logActivity('ca', `⚡ $${dexInfo.symbol || ca.slice(0, 6)} (${mc}) ${sourceChannel} → ${targets[0]}`);
 
         if (channelInfo.tracking?.enabled && dexInfo) {
             const price = parseFloat(dexInfo.price);

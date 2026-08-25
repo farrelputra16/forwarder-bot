@@ -321,6 +321,54 @@ export async function initScraper(sessionStr) {
   return client;
 }
 
+export function getClient() {
+  return client;
+}
+
+export function isConnected() {
+  return !!(client && client.connected);
+}
+
+// Channels & groups the connected account can actually access — the ONLY
+// valid sources/targets for forwarding (web picker is limited to these).
+export async function getAccessibleChannels() {
+  if (!client) throw new Error('Telegram not connected');
+  const dialogs = await client.getDialogs({ limit: 100 });
+  return dialogs
+    .filter(d => d.isChannel || d.isGroup)
+    .map(d => {
+      const broadcast = d.entity?.broadcast === true;
+      const id = d.id?.value?.toString() || String(d.id);
+      const username = d.entity?.username || null;
+      return {
+        id,
+        name: d.name || d.title || 'Unknown',
+        title: d.title || d.name || '',
+        username,
+        identifier: username || id,
+        participants: d.entity?.participantsCount || 0,
+        type: broadcast ? 'channel' : 'group',
+      };
+    })
+    .sort((a, b) => b.participants - a.participants);
+}
+
+// Resolve a marked numeric ID ("-100…") to a sendable entity. Cached.
+const _peerCache = new Map();
+export async function resolveTarget(t) {
+  if (!/^-?\d{6,}$/.test(t)) return t;
+  if (_peerCache.has(t)) return _peerCache.get(t);
+  if (!client) throw new Error('Telegram not connected');
+  const { Api } = await import('telegram');
+  let peer;
+  if (t.startsWith('-100')) peer = new Api.PeerChannel({ channelId: BigInt(t.slice(4)) });
+  else if (t.startsWith('-')) peer = new Api.PeerChat({ channelId: BigInt(t.slice(1)) });
+  else peer = new Api.PeerChannel({ channelId: BigInt(t) });
+  const entity = await client.getEntity(peer);
+  _peerCache.set(t, entity);
+  return entity;
+}
+
 export function onMessage(cb) {
   forwardHandler = cb;
 }
@@ -328,6 +376,12 @@ export function onMessage(cb) {
 export async function resolveAndJoin(identifier) {
   if (!client) throw new Error('Telegram not connected');
   const { Api } = await import('telegram');
+
+  // Numeric marked IDs (e.g. "-1001234567890") — private sources picked from the
+  // account's own dialog list have no username; resolve via peer constructors.
+  if (/^-?\d{6,}$/.test(identifier)) {
+    return resolveTarget(identifier);
+  }
 
   const inviteMatch = identifier.match(/t\.me\/(\+[\w]+)/);
   const isInvite = !!inviteMatch;
@@ -381,22 +435,41 @@ export async function resolveAndJoin(identifier) {
   throw new Error(`Could not resolve or join: ${identifier}`);
 }
 
+const _listeners = new Map(); // entityIdStr → { handler, builder }
+
 export async function addChannelListener(identifier) {
   if (!client) throw new Error('Client not initialized');
-  
+
   const entity = await resolveAndJoin(identifier);
-  
-  client.addEventHandler(async (event) => {
+
+  const handler = async (event) => {
     if (forwardHandler) await forwardHandler(identifier, event.message);
-  }, new NewMessage({ chats: [entity.id] }));
-  
+  };
+  const builder = new NewMessage({ chats: [entity.id] });
+  client.addEventHandler(handler, builder);
+  _listeners.set(String(entity.id), { handler, builder });
+
   console.log(`[Scraper] Listening to ${identifier}`);
   return true;
 }
 
+export async function removeChannelListener(identifier) {
+  if (!client) return;
+  try {
+    const entity = await resolveAndJoin(identifier);
+    const rec = _listeners.get(String(entity.id));
+    if (rec) {
+      client.removeEventHandler(rec.handler, rec.builder);
+      _listeners.delete(String(entity.id));
+      console.log(`[Scraper] Stopped listening to ${identifier}`);
+    }
+  } catch { /* unresolvable — nothing registered */ }
+}
+
 export async function forwardMessage(targetChannel, text, parseMode) {
   if (!client) throw new Error('Telegram not initialized');
+  const target = await resolveTarget(String(targetChannel));
   const opts = { message: text };
   if (parseMode) opts.parseMode = parseMode;
-  await client.sendMessage(targetChannel, opts);
+  await client.sendMessage(target, opts);
 }
