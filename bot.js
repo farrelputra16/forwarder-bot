@@ -23,6 +23,15 @@ function scraperStatusLine() {
 
 export const bot = new Telegraf(config.botToken);
 
+// Bot API identity (ready after launch). Web dashboard uses this for the
+// Telegram Login Widget + deep links — no manual login needed.
+export function getBotUsername() {
+  try { return bot.botInfo?.username || ''; } catch { return ''; }
+}
+export function isBotActive() {
+  try { return !!bot.botInfo; } catch { return false; }
+}
+
 const userState = new Map();
 const PER_PAGE = 5;
 

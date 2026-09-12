@@ -219,8 +219,16 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
   <h1 style="font-size:1.15rem;font-weight:800">Forwarder Bot</h1>
   <p class="hint" id="lock-sub" style="text-align:center;margin-top:-0.6rem">Login with your own Telegram account —<br>your channels stay private to you.</p>
 
-  <!-- Step 1: credentials -->
-  <div id="lg-step1" style="display:flex;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
+  <!-- Primary: 1-click Telegram login (no credentials, no OTP, no flood) -->
+  <div id="tg-widget-wrap" style="display:flex;flex-direction:column;align-items:center;gap:.35rem">
+    <div id="tg-widget"></div>
+    <p class="hint" style="font-size:.62rem">1 click — Telegram confirms it's you</p>
+  </div>
+
+  <!-- Step 1: credentials (advanced: only needed to attach a NEW scraper session) -->
+  <details id="lg-adv" style="width:300px;max-width:86vw">
+    <summary class="hint" style="cursor:pointer;text-align:center;list-style:none">⚙️ Advanced: API ID/Hash login</summary>
+  <div id="lg-step1" style="display:flex;flex-direction:column;gap:.5rem;margin-top:.5rem">
     <input id="lg-api-id" type="number" placeholder="API ID (my.telegram.org)" autocomplete="off">
     <input id="lg-api-hash" placeholder="API Hash" autocomplete="off">
     <select id="lg-dc">
@@ -240,6 +248,7 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
       <button class="btn btn-g" onclick="doLogin()" style="width:100%">Unlock with password</button>
     </div>
   </div>
+  </details>
 
   <!-- Step 2: OTP -->
   <div id="lg-step2" style="display:none;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
@@ -388,12 +397,45 @@ async function showLock(){
     const o=await fetch('/api/auth/options').then(r=>r.json());
     $('#lg-master-wrap').style.display=o.masterPassword?'block':'none';
     if(o.botUsername){lgBotUrl=`https://t.me/${o.botUsername}`;$('#lg-open-bot').style.display='block'}
+    // Official Telegram Login Widget — 1 click, Telegram proves identity.
+    // Needs the script (re)injected per bot username; safe to re-run.
+    const wrap=$('#tg-widget');
+    if(o.botUsername&&wrap&&!wrap.dataset.for){
+      wrap.dataset.for=o.botUsername;
+      wrap.innerHTML='';
+      const s=document.createElement('script');
+      s.src='https://telegram.org/js/telegram-widget.js?22';
+      s.async=true;
+      s.setAttribute('data-telegram-login',o.botUsername);
+      s.setAttribute('data-size','large');
+      s.setAttribute('data-radius','12');
+      s.setAttribute('data-onauth','onTelegramAuth(user)');
+      s.setAttribute('data-request-access','write');
+      wrap.appendChild(s);
+    } else if(!o.botUsername&&wrap){
+      wrap.innerHTML='<p class="hint">Bot offline — use API login below.</p>';
+    }
   }catch{}
   // restore saved creds for convenience
   try{const c=JSON.parse(localStorage.getItem('fw_creds')||'{}');
     if(c.a){$('#lg-api-id').value=c.a;$('#lg-api-hash').value=c.h;$('#lg-dc').value=c.dc||'0';$('#lg-phone').value=c.p||'';$('#lg-saved-hint').style.display='block'}
   }catch{}
 }
+// Called by the Telegram widget with the signed user object
+window.onTelegramAuth=async function(user){
+  lgErr('');
+  try{
+    const d=await fetch('/api/auth/widget',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(user)}).then(async r=>{
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(j.error||r.statusText);
+      return j;
+    });
+    saveTokens(d);
+    $('#lock').classList.remove('open');
+    toast(`👋 Welcome @${d.username||d.tid}`,'ok');
+    bootAfterAuth();
+  }catch(e){lgErr(e.message+' — you can still use API login below.')}
+};
 async function bootAfterAuth(){
   try{const me=await api('/me')}catch{}
   refreshAll().catch(()=>{});

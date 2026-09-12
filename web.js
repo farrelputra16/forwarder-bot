@@ -15,7 +15,8 @@ import {
 } from './scraper.js';
 import { loadUser, saveUser, deleteUser, channelTargets, logActivity, getActivity, normalizeIdentifier, getSession, saveSession, deleteSession } from './store.js';
 import { getActiveCount } from './tracking.js';
-import { WEB_PASSWORD, signToken, verifyToken, signLinkToken, signRefresh, verifyRefresh, publicBaseUrl } from './auth.js';
+import { WEB_PASSWORD, signToken, verifyToken, signLinkToken, signRefresh, verifyRefresh, verifyTelegramWidget, publicBaseUrl } from './auth.js';
+import { config } from './config.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 
@@ -136,7 +137,7 @@ export function startWebServer() {
   app.get('/api/auth/options', async (req, res) => {
     let botUsername = '';
     try {
-      const { getBotUsername, isBotActive } = await import('./telegram-bot.js');
+      const { getBotUsername, isBotActive } = await import('./bot.js');
       if (isBotActive()) botUsername = getBotUsername() || '';
     } catch {}
     res.json({ masterPassword: !!WEB_PASSWORD, botUsername, publicUrl: publicBaseUrl() });
@@ -186,6 +187,20 @@ export function startWebServer() {
     res.json({ ok: true });
   });
 
+  // Telegram Login Widget — one click, zero credentials typed: Telegram itself
+  // proves the account. No OTP, no flood risk. Works on localhost too.
+  app.post('/api/auth/widget', (req, res) => {
+    const d = req.body || {};
+    const tid = verifyTelegramWidget(d, config.botToken);
+    if (!tid) return res.status(401).json({ error: 'Invalid Telegram login — try again' });
+    if (d.username) {
+      try { const s = getSession(tid) || {}; if (!s.username) saveSession(tid, { username: String(d.username) }); } catch {}
+    }
+    const deviceId = _registerDevice(tid);
+    logActivity('channel', `\u{1F464} @${d.username || tid} logged in (Telegram)`);
+    res.json({ ok: true, token: signToken(tid), refresh: signRefresh(tid, deviceId), tid, username: d.username || '' });
+  });
+
   app.use('/api', (req, res, next) => {
     const tid = verifyToken(req.headers['x-web-token']);
     if (!tid) return res.status(401).json({ error: 'unauthorized' });
@@ -201,7 +216,7 @@ export function startWebServer() {
   // Deep link into the bot as THIS account — ids match on both sides.
   app.get('/api/bot/link', async (req, res) => {
     try {
-      const { getBotUsername, isBotActive } = await import('./telegram-bot.js');
+      const { getBotUsername, isBotActive } = await import('./bot.js');
       const u = isBotActive() ? getBotUsername() : '';
       if (!u) return res.json({ url: '', error: 'Bot not active' });
       res.json({ url: `https://t.me/${u}?start=web_${req.tid}` });

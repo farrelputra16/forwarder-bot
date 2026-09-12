@@ -57,6 +57,31 @@ export function verifyRefresh(token) {
   return sig === p[4] ? { tid, deviceId } : null;
 }
 
+// ── Telegram Login Widget verification ──────────────────────────
+// Proves account ownership with ZERO credentials typed: Telegram signs
+// {id, first_name, …, auth_date} with HMAC-SHA256 keyed by the bot token.
+// Pure function — unit-testable, no network.
+export function verifyTelegramWidget(data, botToken, maxAgeSec = 86400) {
+  try {
+    if (!data || !botToken || !data.id || !data.hash || !data.auth_date) return null;
+    const age = Math.abs(Date.now() / 1000 - Number(data.auth_date));
+    if (!Number.isFinite(age) || age > maxAgeSec) return null; // stale / replay
+    const check = Object.keys(data)
+      .filter(k => k !== 'hash' && data[k] !== undefined && data[k] !== null && data[k] !== '')
+      .sort()
+      .map(k => `${k}=${data[k]}`)
+      .join('\n');
+    const secret = crypto.createHash('sha256').update(String(botToken)).digest();
+    const hmac = crypto.createHmac('sha256', secret).update(check).digest('hex');
+    const a = Buffer.from(hmac, 'hex');
+    const b = Buffer.from(String(data.hash).toLowerCase(), 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return String(data.id);
+  } catch {
+    return null;
+  }
+}
+
 export function publicBaseUrl() {
   // Lokal: kosongkan env → otomatis localhost. Hosting (Render) isi sendiri.
   return process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || process.env.BASE_WEB_URL || `http://localhost:${process.env.PORT || 3000}`;

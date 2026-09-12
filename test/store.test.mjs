@@ -165,3 +165,18 @@ test('web: auth required + users only ever see their own channels', async () => 
 after(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
+
+test('auth: Telegram Login Widget signature verifies (valid / forged / stale)', async () => {
+  const { verifyTelegramWidget } = await import('../auth.js');
+  const botToken = '123456:TEST-TOKEN-ABC';
+  const payload = { id: 987654321, first_name: 'Far', last_name: 'Rel', username: 'farrel', auth_date: Math.floor(Date.now() / 1000) };
+  const check = Object.keys(payload).sort().map(k => `${k}=${payload[k]}`).join('\n');
+  const secret = crypto.createHash('sha256').update(botToken).digest();
+  const hash = crypto.createHmac('sha256', secret).update(check).digest('hex');
+
+  assert.equal(verifyTelegramWidget({ ...payload, hash }, botToken), '987654321');
+  assert.equal(verifyTelegramWidget({ ...payload, hash: '0'.repeat(64) }, botToken), null, 'forged hash rejected');
+  assert.equal(verifyTelegramWidget({ ...payload, hash }, 'wrong-token'), null, 'wrong bot token rejected');
+  assert.equal(verifyTelegramWidget({ ...payload, auth_date: Math.floor(Date.now() / 1000) - 100000, hash }, botToken), null, 'stale replay rejected');
+  assert.equal(verifyTelegramWidget({ id: 1 }, botToken), null, 'incomplete payload rejected');
+});
