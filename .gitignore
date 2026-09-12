@@ -4,3 +4,5 @@ channels.json
 tracking.json
 photo_cache/
 .web_secret
+
+*.png
