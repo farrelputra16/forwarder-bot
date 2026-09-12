@@ -8,3 +8,4 @@ photo_cache/
 *.png
 sessions.json
 bot.lock
+*.bak-*

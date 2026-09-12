@@ -210,15 +210,17 @@ onMessage(async (ownerTid, sourceChannel, message) => {
 // ── Register listeners for every connected account ───────────────
 {
   const tids = listUserIds().filter(tid => Object.keys(loadUser(tid)).length);
-  const noClients = listClients().length === 0;
-  if (tids.length && noClients) {
+  if (!tids.length) {
+    console.log('[Boot] No channels configured yet — add some from the bot.');
+  } else if (listClients().length === 0) {
     console.log(`[Boot] ${tids.length} akun punya channel tapi tidak ada client — listener dilewati (login dulu untuk mengaktifkan).`);
-  }
-  for (const tid of tids) {
-    const chs = loadUser(tid);
-    for (const src of Object.keys(chs)) {
-      await addChannelListener(src, tid).catch(e =>
-        console.warn(`[Boot] (${tid}) listener ${src}: ${e.message}`));
+  } else {
+    for (const tid of tids) {
+      const chs = loadUser(tid);
+      for (const src of Object.keys(chs)) {
+        await addChannelListener(src, tid).catch(e =>
+          console.warn(`[Boot] (${tid}) listener ${src}: ${e.message}`));
+      }
     }
   }
 }

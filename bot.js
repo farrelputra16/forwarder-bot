@@ -282,7 +282,7 @@ bot.action(/^toggle_(.+)$/, async (ctx) => {
   const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].active = !chs[ch].active;
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   await ctx.answerCbQuery(chs[ch].active ? '▶️ Resumed' : '⏸ Paused');
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -296,7 +296,7 @@ bot.action(/^toggledup_(.+)$/, async (ctx) => {
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].ignoreDuplicate = !chs[ch].ignoreDuplicate;
   if (!chs[ch].seenCAs) chs[ch].seenCAs = [];
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   await ctx.answerCbQuery(chs[ch].ignoreDuplicate ? '✅ Dup Ignored' : '❌ Dup Pass Through');
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -309,7 +309,7 @@ bot.action(/^switchmode_(.+)$/, async (ctx) => {
   const chs = loadUser(curTid(ctx));
   if (!chs[ch]) return ctx.answerCbQuery('Not found');
   chs[ch].mode = chs[ch].mode === 'extract' ? 'forward' : 'extract';
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   await ctx.answerCbQuery(`Mode: ${chs[ch].mode === 'extract' ? '📋 Extract' : '📨 Forward'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
     parse_mode: 'Markdown',
@@ -328,7 +328,7 @@ bot.action(/^cyclex_(.+)$/, async (ctx) => {
   const next = cycle(chs[ch].tracking?.xAlerts);
   if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
   chs[ch].tracking.xAlerts = next;
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   updateTrackingXStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next, curTid(ctx));
   await ctx.answerCbQuery(`X Alerts: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
@@ -344,7 +344,7 @@ bot.action(/^cyclep_(.+)$/, async (ctx) => {
   const next = cycle(chs[ch].tracking?.periodic);
   if (!chs[ch].tracking) chs[ch].tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: 3600 };
   chs[ch].tracking.periodic = next;
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   updateTrackingPeriodicStatus(chs[ch].targets || (chs[ch].target ? [chs[ch].target] : []), next, curTid(ctx));
   await ctx.answerCbQuery(`Updates: ${next === 'on' ? '🟢 On' : next === 'paused' ? '⏸ Paused' : '❌ Off'}`);
   await ctx.editMessageText(detail(ch, chs[ch]), {
@@ -375,7 +375,7 @@ bot.action(/^confirm_delete_(.+)$/, async (ctx) => {
   const ch = ctx.match[1];
   const chs = loadUser(curTid(ctx));
   delete chs[ch];
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   await ctx.answerCbQuery('🗑 Deleted');
   await ctx.editMessageText(
     `🗑 *Deleted*\n\n\`${ch}\` has been removed.`,
@@ -650,14 +650,14 @@ bot.action(/^pickatgt_(\d+)$/, async (ctx) => {
   if (d.identifier === chKey) return ctx.answerCbQuery('⚠️ Target must differ from source');
   if (chs[chKey].targets.includes(d.identifier)) return ctx.answerCbQuery('Already added');
   chs[chKey].targets.push(d.identifier);
-  saveUser(chs, tid);
+  saveUser(tid, chs);
   userState.delete(ctx.from.id);
   await ctx.answerCbQuery(`✅ Target added`);
   await ctx.editMessageText(detail(chKey, chs[chKey]), { parse_mode: 'Markdown', ...manageKb(chKey, chs[chKey]) });
 });
 
 // ── Remove a single target from the manage screen ──
-bot.action(/^rmtgt_(.+)_(\\d+)$/, async (ctx) => {
+bot.action(/^rmtgt_(.+)_(\d+)$/, async (ctx) => {
   const ch = ctx.match[1];
   const i = parseInt(ctx.match[2]);
   const tid = curTid(ctx);
@@ -667,7 +667,7 @@ bot.action(/^rmtgt_(.+)_(\\d+)$/, async (ctx) => {
   if (chs[ch].targets.length <= 1) return ctx.answerCbQuery('⚠️ Channel needs at least one target');
   const gone = chs[ch].targets.splice(i, 1)[0];
   if (gone === undefined) return ctx.answerCbQuery('Not found');
-  saveUser(chs, tid);
+  saveUser(tid, chs);
   await ctx.answerCbQuery(`🗑 Removed ${gone}`);
   await ctx.editMessageText(detail(ch, chs[ch]), { parse_mode: 'Markdown', ...manageKb(ch, chs[ch]) });
 });
@@ -761,7 +761,7 @@ bot.on('text', async (ctx) => {
     }
     if (chs[s.channel].targets.includes(key)) return ctx.reply('⚠️ Target already added.');
     chs[s.channel].targets.push(key);
-    saveUser(chs, curTid(ctx));
+    saveUser(curTid(ctx), chs);
     await ctx.reply(
       `✅ *Target Added*\n\n\`${key}\`\n\nAll targets: ${chs[s.channel].targets.join(', ')}`,
       {
@@ -781,13 +781,35 @@ bot.on('text', async (ctx) => {
 // ── Process Tracking Final ───────────────────────────────────────
 
 async function processTrackingFinal(ctx, s) {
-  const chs = loadUser(curTid(ctx));
+  const tid = curTid(ctx);
+  if (!s.link) {
+    userState.delete(ctx.from.id);
+    return ctx.reply('⚠️ Session expired — tap ➕ Add Channel to start over.', {
+      reply_markup: { inline_keyboard: [[{ text: '➕ Add Channel', callback_data: 'add_channel' }]] }
+    });
+  }
+  if (!s.targets || !s.targets.length) {
+    s.step = 'TARGET';
+    userState.set(ctx.from.id, s);
+    return ctx.reply('⚠️ Add at least one target first — send a @username/link or tap Browse:', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '📋 Browse My Channels', callback_data: 'browse_tgt' }]] }
+    });
+  }
+  const chs = loadUser(tid);
+  if (chs[s.link]) {
+    userState.delete(ctx.from.id);
+    return ctx.reply(`⚠️ \`${s.link}\` is already added — manage it from My Channels.`, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '📡 My Channels', callback_data: 'list_channels_0' }]] }
+    });
+  }
   const entry = { mode: s.mode, targets: s.targets || [s.target].filter(Boolean), active: true };
   if (s.tracking) {
     entry.tracking = { enabled: true, multipliers: [2, 3, 5, 10], interval: s.interval, xAlerts: 'on', periodic: 'on' };
   }
   chs[s.link] = entry;
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   try {
     await addChannelListener(s.link, curTid(ctx));
     const sum = [
@@ -857,7 +879,7 @@ bot.command('set_mode', (ctx) => {
   const chs = loadUser(curTid(ctx));
   if (!chs[channel]) return ctx.reply(`⚠️ "${channel}" not found.`);
   chs[channel].mode = mode;
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   ctx.reply(`✅ Mode for ${channel} → ${mode}.`);
 });
 
@@ -875,7 +897,7 @@ bot.command('set_target', (ctx) => {
     delete chs[channel].target;
   }
   chs[channel].targets.push(target);
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   ctx.reply(`✅ Target added for ${channel}: ${target}\nAll targets: ${chs[channel].targets.join(', ')}`);
 });
 
@@ -899,7 +921,7 @@ bot.command('track', (ctx) => {
   } else {
     return ctx.reply('Action must be "on" or "off".');
   }
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   ctx.reply(`📊 Tracking for ${channel} → *${action}*.`, { parse_mode: 'Markdown' });
 });
 
@@ -917,7 +939,7 @@ bot.command('track_set', (ctx) => {
     return ctx.reply('⚠️ Invalid multipliers or interval (min 60s).');
   }
   chs[channel].tracking = { enabled: true, multipliers, interval, xAlerts: 'on', periodic: 'on' };
-  saveUser(chs, curTid(ctx));
+  saveUser(curTid(ctx), chs);
   ctx.reply(`📊 Tracking for ${channel}: ${multipliers.join('X, ')}X, ${interval}s interval.`);
 });
 
