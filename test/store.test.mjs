@@ -157,6 +157,16 @@ test('web: auth required + users only ever see their own channels', async () => 
       body: JSON.stringify({ refresh: rt }),
     });
     assert.equal(r.status, 401, 'revoked device must not re-login');
+
+    // QR endpoints fail closed without touching Telegram
+    r = await fetch(base + '/api/auth/qr/status?loginToken=nope');
+    assert.equal(r.status, 404);
+    r = await fetch(base + '/api/auth/qr/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginToken: 'nope', password: 'x' }),
+    });
+    assert.equal(r.status, 404);
   } finally {
     server.close();
   }

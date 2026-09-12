@@ -135,14 +135,23 @@ bot.start(async (ctx) => {
 
 // ── Open Web Dashboard (auto-login hand-off) ─────────────────────
 bot.action('open_web', async (ctx) => {
+  const tid = String(ctx.from.id);
   const base = publicBaseUrl().replace(/\/$/, '');
-  const url = `${base}/?auth=${signLinkToken(curTid(ctx))}`;
+  const token = signLinkToken(tid);
+  // Telegram rejects localhost URLs in buttons — send a paste-able code instead.
+  if (/localhost|127\.0\.0\.1/i.test(base)) {
+    await ctx.editMessageText(
+      `🌐 *Web Dashboard — login lokal*\n━━━━━━━━━━━━━━━━━━━━\nTombol URL tidak bisa dipakai untuk localhost, jadi salin kode ini lalu tempel di dashboard (kolom *Paste bot code*):\n\n\`${token}\`\n\nBerlaku *5 menit*, khusus akun ini.`,
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'menu' }]] } }
+    );
+    return;
+  }
   await ctx.editMessageText(
     `🌐 *Web Dashboard*\n━━━━━━━━━━━━━━━━━━━━\nTap the button below — the dashboard opens **already logged in as this account**.\n\n🔗 Login link valid for *5 minutes*.`,
     {
       parse_mode: 'Markdown',
       reply_markup: { inline_keyboard: [
-        [{ text: '🌐 Open Dashboard', url }],
+        [{ text: '🌐 Open Dashboard', url: `${base}/?auth=${token}` }],
         [{ text: '🏠 Menu', callback_data: 'menu' }]
       ] }
     }

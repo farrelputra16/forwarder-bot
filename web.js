@@ -201,6 +201,121 @@ export function startWebServer() {
     res.json({ ok: true, token: signToken(tid), refresh: signRefresh(tid, deviceId), tid, username: d.username || '' });
   });
 
+  // ── QR login: scan with the phone app, zero typing ──────────────
+  // The QR token is rendered by the dashboard; Telegram's own app (already
+  // logged in) approves it. No OTP, no flood. Works on localhost.
+  const PENDING_QR = new Map();
+
+  app.post('/api/auth/qr/start', async (req, res) => {
+    const apiId = parseInt(process.env.TELEGRAM_API_ID);
+    const apiHash = process.env.TELEGRAM_API_HASH;
+    if (!apiId || !apiHash) return res.status(400).json({ error: 'TELEGRAM_API_ID/HASH missing in server .env' });
+    try {
+      const { StringSession } = await import('telegram/sessions/index.js');
+      const { TelegramClient } = await import('telegram');
+      const QRCode = (await import('qrcode')).default;
+      const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 3 });
+      await client.connect();
+
+      const loginToken = crypto.randomUUID();
+      const rec = { client, apiId, apiHash, state: 'waiting', currentToken: '', sentToken: '', sessionStr: '', tid: '', error: '', pwResolve: null, startedAt: Date.now() };
+      PENDING_QR.set(loginToken, rec);
+      setTimeout(() => { PENDING_QR.delete(loginToken); client.destroy().catch(() => {}); }, 5 * 60 * 1000);
+
+      rec.runner = (async () => {
+        try {
+          await client.signInUserWithQrCode({ apiId, apiHash }, {
+            qrCode: async ({ token }) => {
+              rec.currentToken = Buffer.from(token).toString('base64url');
+              // hold until superseded (~20s) so the loop exports a fresh token
+              await new Promise(r => setTimeout(r, 20_000));
+            },
+            password: async () => {
+              rec.state = 'password';
+              return new Promise((resolve, reject) => { rec.pwResolve = resolve; rec.pwReject = reject; });
+            },
+            onError: async () => false,
+          });
+          rec.state = 'done';
+          rec.sessionStr = client.session.save();
+          const me = await client.getMe().catch(() => null);
+          rec.tid = me ? String(me.id) : '';
+          rec.username = me?.username || '';
+        } catch (e) {
+          rec.state = 'error';
+          rec.error = e.errorMessage || e.message || 'QR login failed';
+        }
+      })();
+      // wait briefly for the first token so the response includes a QR
+      for (let i = 0; i < 40 && !rec.currentToken && rec.state === 'waiting'; i++) {
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (!rec.currentToken) {
+        const err = rec.error || 'Timed out waiting for QR token';
+        PENDING_QR.delete(loginToken);
+        await client.destroy().catch(() => {});
+        return res.status(500).json({ error: err });
+      }
+      const qr = await QRCode.toDataURL('tg://login?token=' + rec.currentToken, { width: 280, margin: 1 });
+      rec.sentToken = rec.currentToken;
+      res.json({ ok: true, loginToken, qr });
+    } catch (e) {
+      res.status(500).json({ error: e.errorMessage || e.message });
+    }
+  });
+
+  app.get('/api/auth/qr/status', async (req, res) => {
+    const rec = PENDING_QR.get(String(req.query.loginToken || ''));
+    if (!rec) return res.status(404).json({ error: 'QR session expired — start again' });
+    try {
+      if (rec.state === 'password') return res.json({ ok: true, status: 'password' });
+      if (rec.state === 'error') { PENDING_QR.delete(String(req.query.loginToken)); return res.status(400).json({ error: rec.error }); }
+      if (rec.state === 'done') {
+        PENDING_QR.delete(String(req.query.loginToken));
+        if (!rec.sessionStr || !rec.tid) return res.status(400).json({ error: 'Login incomplete — try again' });
+        const { tid } = await initScraper(rec.sessionStr, { apiId: rec.apiId, apiHash: rec.apiHash, dcId: 0 });
+        saveSession(tid, { session: rec.sessionStr, apiId: rec.apiId, apiHash: rec.apiHash, dc: 0, username: rec.username || '' });
+        try { await rec.client.destroy().catch(() => {}); } catch {}
+        // first real login claims any legacy workspace
+        if (!Object.keys(loadUser(tid)).length) {
+          const legacy = loadUser('_legacy');
+          if (Object.keys(legacy).length) { saveUser(tid, legacy); deleteUser('_legacy'); }
+        }
+        const deviceId = _registerDevice(tid);
+        await addChannelListenerBulk(tid);
+        logActivity('channel', `👤 @${rec.username || tid} logged in (QR)`);
+        return res.json({ ok: true, status: 'done', token: signToken(tid), refresh: signRefresh(tid, deviceId), tid, username: rec.username || '' });
+      }
+      // still waiting — send a fresh QR only when the token rotated
+      if (rec.currentToken && rec.currentToken !== rec.sentToken) {
+        const QRCode = (await import('qrcode')).default;
+        const qr = await QRCode.toDataURL('tg://login?token=' + rec.currentToken, { width: 280, margin: 1 });
+        rec.sentToken = rec.currentToken;
+        return res.json({ ok: true, status: 'waiting', qr });
+      }
+      return res.json({ ok: true, status: 'waiting' });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/auth/qr/password', (req, res) => {
+    const rec = PENDING_QR.get(String(req.body?.loginToken || ''));
+    if (!rec) return res.status(404).json({ error: 'QR session expired — start again' });
+    if (rec.state !== 'password' || !rec.pwResolve) return res.status(400).json({ error: 'No password requested' });
+    rec.pwResolve(String(req.body?.password || ''));
+    rec.state = 'waiting';
+    res.json({ ok: true });
+  });
+
+  // Register listeners for a freshly connected account
+  async function addChannelListenerBulk(tid) {
+    try {
+      const chs = loadUser(tid);
+      for (const src of Object.keys(chs)) await addChannelListener(src, tid).catch(() => {});
+    } catch {}
+  }
+
   app.use('/api', (req, res, next) => {
     const tid = verifyToken(req.headers['x-web-token']);
     if (!tid) return res.status(401).json({ error: 'unauthorized' });
