@@ -164,9 +164,16 @@ async function _fetchDexScreener(ca, attempt = 0) {
     // Rate-limited / transient server errors → retry with backoff instead of giving up
     if (!res.ok) throw Object.assign(new Error(`dexscreener HTTP ${res.status}`), { retryable: res.status === 429 || res.status >= 500 });
     const data = await res.json();
-    if (!data.pairs?.length) return null;
-    const pair = data.pairs.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase())
-      || data.pairs[0];
+    if (!data.pairs?.length) {
+      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (token terlalu baru / CA salah)`);
+      return null;
+    }
+    // WAJIB cocok persis — jangan pernah pakai pair[0] karena bisa jadi token lain!
+    const pair = data.pairs.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase());
+    if (!pair) {
+      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (tidak ada pair persis)`);
+      return null;
+    }
     return {
       chain: CHAIN_MAP[pair.chainId] || pair.chainId,
       symbol: pair.baseToken?.symbol || '',
@@ -194,6 +201,22 @@ async function _fetchDexScreener(ca, attempt = 0) {
     console.error(`[DexScreener] failed for ${ca}: ${e.message}`);
     return null;
   }
+}
+
+// Token yang baru lahir sering belum ter-index saat CA masuk —
+// tunggu & coba lagi bertahap (±60 dtk) sebelum menyerah.
+export async function waitForDexData(ca, delays = [10_000, 20_000, 30_000]) {
+  for (const wait of delays) {
+    await new Promise(r => setTimeout(r, wait));
+    try {
+      const d = await fetchDexScreenerInfo(ca);
+      if (d && parseFloat(d.price) > 0) {
+        console.log(`[DexScreener] ${ca.slice(0, 8)}… data menyusul ✅`);
+        return d;
+      }
+    } catch {}
+  }
+  return null;
 }
 
 // ── Formatting ──────────────────────────────────────────────────

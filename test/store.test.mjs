@@ -190,3 +190,30 @@ test('auth: Telegram Login Widget signature verifies (valid / forged / stale)', 
   assert.equal(verifyTelegramWidget({ ...payload, auth_date: Math.floor(Date.now() / 1000) - 100000, hash }, botToken), null, 'stale replay rejected');
   assert.equal(verifyTelegramWidget({ id: 1 }, botToken), null, 'incomplete payload rejected');
 });
+
+test('dex: only exact baseToken match accepted (no wrong-token fallback)', async () => {
+  const orig = globalThis.fetch;
+  const pair = (addr) => ({ chainId: 'solana', baseToken: { address: addr, symbol: 'FAKE' }, priceUsd: '1' });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ pairs: [pair('OTHER11111111111111111111111111111111')] }) });
+  try {
+    const { fetchDexScreenerInfo } = await import('../scraper.js');
+    const d = await fetchDexScreenerInfo('DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
+    assert.equal(d, null, 'must not attribute another token pair');
+  } finally { globalThis.fetch = orig; }
+});
+
+test('dex: waitForDexData retries then resolves late data', async () => {
+  const orig = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls < 2) return { ok: true, json: async () => ({ pairs: [] }) };
+    return { ok: true, json: async () => ({ pairs: [{ chainId: 'solana', baseToken: { address: 'LATE1111111111111111111111111111111111', symbol: 'LATE' }, priceUsd: '0.5' }] }) };
+  };
+  try {
+    const { waitForDexData } = await import('../scraper.js');
+    const d = await waitForDexData('LATE1111111111111111111111111111111111', [5, 5, 5]);
+    assert.ok(d && d.symbol === 'LATE', 'late-indexed data must resolve');
+    assert.ok(calls >= 2, 'must have retried');
+  } finally { globalThis.fetch = orig; }
+});

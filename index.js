@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt, listClients } from './scraper.js';
+import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, waitForDexData, fmt, listClients } from './scraper.js';
 import { config } from './config.js';
 import { initTrackings, addTracking } from './tracking.js';
 import { startWebServer } from './web.js';
@@ -162,7 +162,10 @@ onMessage(async (ownerTid, sourceChannel, message) => {
 
       // The detail card ALWAYS goes out — rich data when DexScreener responds,
       // a graceful fallback card when it doesn't. Never silently skipped.
-      const dexInfo = await fetchDexScreenerInfo(ca);
+      let dexInfo = await fetchDexScreenerInfo(ca);
+      if (!(dexInfo && parseFloat(dexInfo.price) > 0)) {
+        dexInfo = await waitForDexData(ca); // token baru: beri waktu ter-index
+      }
       const price = dexInfo ? parseFloat(dexInfo.price) : 0;
       let msg2;
       let mc = '?';
