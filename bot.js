@@ -1,6 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients } from './scraper.js';
+import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients, ensureAccessible, getAccessibleChannels } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
 import { loadUser, saveUser } from './store.js';
 import { signLinkToken, publicBaseUrl } from './auth.js';
@@ -100,12 +100,13 @@ function manageKb(ch, info) {
 }
 
 function menuKb(ctx) {
+  const webOn = process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true';
   return {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📡 My Channels', callback_data: 'list_channels_0' }],
         [{ text: '➕ Add Channel', callback_data: 'add_channel' }],
-        [{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }],
+        ...(webOn ? [[{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }]] : []),
         [{ text: '📊 Dashboard', callback_data: 'dashboard' }],
         [{ text: '❓ Help', callback_data: 'help' }]
       ]
@@ -135,9 +136,15 @@ bot.start(async (ctx) => {
 
 // ── Open Web Dashboard (auto-login hand-off) ─────────────────────
 bot.action('open_web', async (ctx) => {
-  const tid = String(ctx.from.id);
+  const webOn = process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true';
+  if (!webOn) {
+    return ctx.editMessageText(
+      `🌐 *Web Dashboard sedang nonaktif.*\n\nSemua pengaturan dilakukan di sini (bot). Untuk menyalakan web: \`ENABLE_WEB=1 npm start\``,
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'menu' }]] } }
+    );
+  }
   const base = publicBaseUrl().replace(/\/$/, '');
-  const token = signLinkToken(tid);
+  const token = signLinkToken(String(ctx.from.id));
   // Telegram rejects localhost URLs in buttons — send a paste-able code instead.
   if (/localhost|127\.0\.0\.1/i.test(base)) {
     await ctx.editMessageText(
@@ -422,8 +429,11 @@ bot.action('addtarget_done', (ctx) => {
 bot.action('add_channel', (ctx) => {
   userState.set(ctx.from.id, { step: 'LINK' });
   ctx.editMessageText(
-    `➕ *Add Channel — Step 1/4*\n\nSend the channel *link or username*.\n\nExamples:\n\`@channelname\`\n\`https://t.me/channelname\`\n\`https://t.me/+invitehash\``,
-    { parse_mode: 'Markdown' }
+    `➕ *Add Channel — Step 1/4*\n\nSend the channel *link or username*.\n\nExamples:\n\`@channelname\`\n\`https://t.me/channelname\`\n\`https://t.me/+invitehash\`\n\n…or pick from channels your account has joined:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '📋 Browse My Channels', callback_data: 'browse_src' }]] }
+    }
   );
 });
 
@@ -482,17 +492,222 @@ bot.action(/mode_(.+)/, (ctx) => {
   );
 });
 
+// ── Browse accessible dialogs (source/target picker) ─────────────
+const browseCache = new Map(); // uid -> { list, ts }
+const BROWSE_TTL = 5 * 60 * 1000;
+const BROWSE_PER = 8;
+
+async function getBrowseList(ctx) {
+  const uid = ctx.from.id;
+  const cached = browseCache.get(uid);
+  if (cached && Date.now() - cached.ts < BROWSE_TTL) return cached.list;
+  const list = await getAccessibleChannels(false, curTid(ctx));
+  browseCache.set(uid, { list, ts: Date.now() });
+  return list;
+}
+
+function browseKb(list, page, pickPrefix, navPrefix, picked = new Set(), extraRows = []) {
+  const tp = Math.ceil(list.length / BROWSE_PER) || 1;
+  const p = Math.min(Math.max(page, 0), tp - 1);
+  const slice = list.slice(p * BROWSE_PER, p * BROWSE_PER + BROWSE_PER);
+  const kb = [];
+  for (let i = 0; i < slice.length; i++) {
+    const d = slice[i];
+    const idx = p * BROWSE_PER + i;
+    const mark = picked.has(d.identifier) ? '✅ ' : '';
+    kb.push([{ text: `${mark}${d.type === 'group' ? '👥' : '📢'} ${shortTitle(d.title || d.name)}`, callback_data: `${pickPrefix}_${idx}` }]);
+  }
+  const nr = navRow(p, tp, navPrefix);
+  if (nr.length) kb.push(nr);
+  for (const r of extraRows) kb.push(r);
+  return kb;
+}
+
+async function renderBrowse(ctx, page, mode) {
+  // mode: 'src' | 'tgt' | 'atgt'
+  const titles = {
+    src: '📋 *Pick Source* — channels your account has joined:',
+    tgt: '🎯 *Pick Targets* — tap to toggle, then Done:',
+    atgt: '🎯 *Pick Target* — tap one to add:',
+  };
+  const cfg = {
+    src: ['picksrc', 'bsrc', [[{ text: '✍️ Type link instead', callback_data: 'browse_typelink' }]]],
+    tgt: ['picktgt', 'btgt', [[{ text: '✅ Done', callback_data: 'tgtdone' }]]],
+    atgt: ['pickatgt', 'batgt', []],
+  }[mode];
+  try {
+    const list = await getBrowseList(ctx);
+    if (!list.length) {
+      return ctx.editMessageText('📭 No channels/groups found on this account.\nJoin some in Telegram first, then try again.', { parse_mode: 'Markdown' });
+    }
+    const s = userState.get(ctx.from.id) || {};
+    if (mode === 'tgt') {
+      // mark current picks
+      const picked = new Set([...(s.targets || []), ...((s.pickSet instanceof Set) ? [...s.pickSet] : [])]);
+      list._picked = picked;
+    }
+    await ctx.editMessageText(`${titles[mode]}\n\n_Page ${page + 1}/${Math.ceil(list.length / BROWSE_PER) || 1}_`,
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: browseKb(list, page, cfg[0], cfg[1], cfg[2]) } });
+  } catch (e) {
+    await ctx.editMessageText(`⚠️ ${e.message}\n\nMake sure the scraper account is connected (\`npm run login\`).`, { parse_mode: 'Markdown' });
+  }
+}
+
+bot.action('browse_src', (ctx) => {
+  const s = userState.get(ctx.from.id) || {};
+  s.step = 'LINK';
+  userState.set(ctx.from.id, s);
+  renderBrowse(ctx, 0, 'src');
+});
+bot.action(/^bsrc_(\d+)$/, (ctx) => renderBrowse(ctx, parseInt(ctx.match[1]), 'src'));
+bot.action('browse_typelink', (ctx) => {
+  const s = userState.get(ctx.from.id) || {};
+  s.step = 'LINK';
+  userState.set(ctx.from.id, s);
+  ctx.editMessageText(`✍️ Send the channel *link or username*.\n\nExamples:\n\`@channelname\`\n\`https://t.me/channelname\`\n\`https://t.me/+invitehash\``, { parse_mode: 'Markdown' });
+});
+bot.action(/^picksrc_(\d+)$/, async (ctx) => {
+  const idx = parseInt(ctx.match[1]);
+  let list;
+  try { list = await getBrowseList(ctx); } catch (e) { return ctx.answerCbQuery('⚠️ ' + e.message); }
+  const d = list[idx];
+  if (!d) return ctx.answerCbQuery('Gone — tap Browse again');
+  const s = userState.get(ctx.from.id) || {};
+  s.link = d.identifier;
+  s.step = 'MODE';
+  userState.set(ctx.from.id, s);
+  await ctx.answerCbQuery(`✅ ${d.title || d.identifier}`);
+  await ctx.editMessageText(
+    `✅ Source: \`${d.identifier}\`\n\n➕ *Add Channel — Step 2/4*\n\nChoose forwarding mode:`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📋 Extract CA — token addresses only', callback_data: 'mode_extract' }],
+          [{ text: '📨 Forward All — entire messages', callback_data: 'mode_forward' }]
+        ]
+      }
+    }
+  );
+});
+
+bot.action('browse_tgt', (ctx) => {
+  const s = userState.get(ctx.from.id) || {};
+  if (!s.pickSet) s.pickSet = new Set();
+  s.pickPage = 0;
+  userState.set(ctx.from.id, s);
+  renderBrowse(ctx, 0, 'tgt');
+});
+bot.action(/^btgt_(\d+)$/, (ctx) => {
+  const s = userState.get(ctx.from.id) || {};
+  s.pickPage = parseInt(ctx.match[1]);
+  userState.set(ctx.from.id, s);
+  renderBrowse(ctx, s.pickPage, 'tgt');
+});
+bot.action(/^picktgt_(\d+)$/, async (ctx) => {
+  const idx = parseInt(ctx.match[1]);
+  const s = userState.get(ctx.from.id) || {};
+  if (!s.pickSet) s.pickSet = new Set();
+  let list;
+  try { list = await getBrowseList(ctx); } catch (e) { return ctx.answerCbQuery('⚠️ ' + e.message); }
+  const d = list[idx];
+  if (!d) return ctx.answerCbQuery('Gone — tap Browse again');
+  if (d.identifier === s.link) return ctx.answerCbQuery('⚠️ Target must differ from source');
+  if (s.pickSet.has(d.identifier)) { s.pickSet.delete(d.identifier); await ctx.answerCbQuery('➖ Removed'); }
+  else { s.pickSet.add(d.identifier); await ctx.answerCbQuery(`✅ ${d.title || d.identifier}`); }
+  userState.set(ctx.from.id, s);
+  renderBrowse(ctx, s.pickPage || 0, 'tgt');
+});
+bot.action('tgtdone', async (ctx) => {
+  const s = userState.get(ctx.from.id) || {};
+  const picked = [...(s.pickSet instanceof Set ? [...s.pickSet] : [])].filter(t => t !== s.link && !(s.targets || []).includes(t));
+  if (!s.targets) s.targets = [];
+  s.targets.push(...picked);
+  delete s.pickSet;
+  userState.set(ctx.from.id, s);
+  if (!picked.length && !s.targets.length) return ctx.answerCbQuery('Pick at least one target');
+  await askMoreTargets(ctx, picked.length ? `${picked.length} picked: \`${picked.join(', ')}\`` : 'current selection');
+});
+
+bot.action('browse_atgt', (ctx) => renderBrowse(ctx, 0, 'atgt'));
+bot.action(/^batgt_(\d+)$/, (ctx) => renderBrowse(ctx, parseInt(ctx.match[1]), 'atgt'));
+bot.action(/^pickatgt_(\d+)$/, async (ctx) => {
+  const idx = parseInt(ctx.match[1]);
+  const s = userState.get(ctx.from.id) || {};
+  let list;
+  try { list = await getBrowseList(ctx); } catch (e) { return ctx.answerCbQuery('⚠️ ' + e.message); }
+  const d = list[idx];
+  if (!d) return ctx.answerCbQuery('Gone — tap Browse again');
+  const tid = curTid(ctx);
+  const chs = loadUser(tid);
+  const chKey = s.channel;
+  if (!chKey || !chs[chKey]) return ctx.answerCbQuery('Channel gone');
+  if (!chs[chKey].targets) { chs[chKey].targets = [chs[chKey].target].filter(Boolean); delete chs[chKey].target; }
+  if (d.identifier === chKey) return ctx.answerCbQuery('⚠️ Target must differ from source');
+  if (chs[chKey].targets.includes(d.identifier)) return ctx.answerCbQuery('Already added');
+  chs[chKey].targets.push(d.identifier);
+  saveUser(chs, tid);
+  userState.delete(ctx.from.id);
+  await ctx.answerCbQuery(`✅ Target added`);
+  await ctx.editMessageText(detail(chKey, chs[chKey]), { parse_mode: 'Markdown', ...manageKb(chKey, chs[chKey]) });
+});
+
+// ── Remove a single target from the manage screen ──
+bot.action(/^rmtgt_(.+)_(\\d+)$/, async (ctx) => {
+  const ch = ctx.match[1];
+  const i = parseInt(ctx.match[2]);
+  const tid = curTid(ctx);
+  const chs = loadUser(tid);
+  if (!chs[ch]) return ctx.answerCbQuery('Not found');
+  if (!chs[ch].targets) { chs[ch].targets = [chs[ch].target].filter(Boolean); delete chs[ch].target; }
+  if (chs[ch].targets.length <= 1) return ctx.answerCbQuery('⚠️ Channel needs at least one target');
+  const gone = chs[ch].targets.splice(i, 1)[0];
+  if (gone === undefined) return ctx.answerCbQuery('Not found');
+  saveUser(chs, tid);
+  await ctx.answerCbQuery(`🗑 Removed ${gone}`);
+  await ctx.editMessageText(detail(ch, chs[ch]), { parse_mode: 'Markdown', ...manageKb(ch, chs[ch]) });
+});
+
 // ── Text Input (Wizard) ──────────────────────────────────────────
+
+async function askMoreTargets(ctx, addedLabel) {
+  const s = userState.get(ctx.from.id);
+  await ctx.reply(
+    `✅ Target added: ${addedLabel}\n\nAll targets: ${(s?.targets || []).join(', ') || '—'}\n\nAdd another target?`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Yes, add another', callback_data: 'target_add' }],
+          [{ text: '📋 Browse My Channels', callback_data: 'browse_tgt' }],
+          [{ text: '➡️ No, continue', callback_data: 'target_done' }]
+        ]
+      }
+    }
+  );
+}
+
+function shortTitle(t, n = 26) {
+  t = String(t || '');
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
 
 bot.on('text', async (ctx) => {
   const s = userState.get(ctx.from.id);
   if (!s) return;
 
   if (s.step === 'LINK') {
-    s.link = ctx.message.text;
+    const raw = (ctx.message.text || '').trim();
+    if (!raw) return;
+    await ctx.reply('🔍 Checking access…');
+    try {
+      s.link = await ensureAccessible(raw, curTid(ctx));
+    } catch (e) {
+      return ctx.reply(`⚠️ ${e.message}\n\nTry another link/username, or tap 📋 Browse to pick from your channels.`);
+    }
     s.step = 'MODE';
     await ctx.reply(
-      `➕ *Add Channel — Step 2/4*\n\nChoose forwarding mode:`,
+      `✅ Source: \`${s.link}\`\n\n➕ *Add Channel — Step 2/4*\n\nChoose forwarding mode:`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -504,20 +719,19 @@ bot.on('text', async (ctx) => {
       }
     );
   } else if (s.step === 'TARGET') {
+    const raw = (ctx.message.text || '').trim();
+    if (!raw) return;
+    let key;
+    try {
+      key = await ensureAccessible(raw, curTid(ctx));
+    } catch (e) {
+      return ctx.reply(`⚠️ ${e.message}\n\nTry another target, or tap 📋 Browse to pick from your channels.`);
+    }
+    if (key === s.link) return ctx.reply('⚠️ Target must differ from the source.');
     if (!s.targets) s.targets = [];
-    s.targets.push(ctx.message.text);
-    await ctx.reply(
-      `✅ Target added: \`${ctx.message.text}\`\n\nAdd another target?`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '✅ Yes, add another', callback_data: 'target_add' }],
-            [{ text: '➡️ No, continue', callback_data: 'target_done' }]
-          ]
-        }
-      }
-    );
+    if (s.targets.includes(key)) return ctx.reply('⚠️ Target already added.');
+    s.targets.push(key);
+    await askMoreTargets(ctx, `\`${key}\``);
   } else if (s.step === 'INTERVAL') {
     const h = parseInt(ctx.message.text);
     if (isNaN(h) || h < 1) {
@@ -527,21 +741,31 @@ bot.on('text', async (ctx) => {
     s.step = 'TRACKING_FINAL';
     processTrackingFinal(ctx, s);
   } else if (s.step === 'ADD_TARGET') {
+    const raw = (ctx.message.text || '').trim();
+    if (!raw) return;
+    let key;
+    try {
+      key = await ensureAccessible(raw, curTid(ctx));
+    } catch (e) {
+      return ctx.reply(`⚠️ ${e.message}`);
+    }
     const chs = loadUser(curTid(ctx));
     if (!chs[s.channel]) return ctx.reply('⚠️ Channel not found.');
     if (!chs[s.channel].targets) {
       chs[s.channel].targets = [chs[s.channel].target].filter(Boolean);
       delete chs[s.channel].target;
     }
-    chs[s.channel].targets.push(ctx.message.text);
+    if (chs[s.channel].targets.includes(key)) return ctx.reply('⚠️ Target already added.');
+    chs[s.channel].targets.push(key);
     saveUser(chs, curTid(ctx));
     await ctx.reply(
-      `✅ *Target Added*\n\n\`${ctx.message.text}\`\n\nAll targets: ${chs[s.channel].targets.join(', ')}`,
+      `✅ *Target Added*\n\n\`${key}\`\n\nAll targets: ${chs[s.channel].targets.join(', ')}`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '➕ Add Another', callback_data: `addtarget_${s.channel}` }],
+            [{ text: '📋 Browse My Channels', callback_data: `browse_atgt` }],
             [{ text: '✅ Done', callback_data: 'addtarget_done' }]
           ]
         }

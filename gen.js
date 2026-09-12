@@ -25,6 +25,7 @@ if (!apiId || !apiHash) {
 }
 
 console.log('\nMenghubungkan ke Telegram…');
+console.log('(kode OTP hanya diminta SEKALI — sesudah ini tersimpan permanen)\n');
 const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 5 });
 try {
   await client.start({
@@ -34,7 +35,16 @@ try {
     onError: (err) => console.log('[login]', err.message || err),
   });
 } catch (e) {
-  console.log('❌ Login gagal:', e.errorMessage || e.message);
+  const msg = e.errorMessage || e.message || '';
+  const secs = e.seconds || (/FLOOD_WAIT_(\d+)/.exec(msg)?.[1] * 1) || 0;
+  if (/FLOOD/i.test(msg) || secs > 0) {
+    const mins = Math.max(1, Math.ceil((secs || 300) / 60));
+    console.log(`\n⏳ Telegram membatasi permintaan kode (anti-spam).`);
+    console.log(`   Tunggu ±${mins} menit TANPA minta kode lagi, lalu ulangi: npm run login`);
+    console.log('   (Setiap permintaan baru me-reset timer — jadi jangan spam.)');
+  } else {
+    console.log('❌ Login gagal:', msg);
+  }
   process.exit(1);
 }
 

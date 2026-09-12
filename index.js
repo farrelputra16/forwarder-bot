@@ -6,6 +6,33 @@ import { startWebServer } from './web.js';
 import { initStore, loadUser, saveUser, getSessions, saveSession, deleteSession, listUserIds, logActivity } from './store.js';
 import fs from 'fs';
 
+// ── Single-instance lock: dua proses dengan session yang sama akan
+// saling menendang koneksinya (offline terus) — tolak start kedua. ──
+const LOCK_FILE = './bot.lock';
+(function acquireLock() {
+  try {
+    const pid = parseInt(fs.readFileSync(LOCK_FILE, 'utf8').trim());
+    if (pid) {
+      try {
+        process.kill(pid, 0);
+        console.error(`\n❌ Bot sudah berjalan (PID ${pid}). Hentikan dulu (Ctrl+C di terminal itu) lalu start lagi.\n   Menjalankan 2x dengan session yang sama = koneksi saling tendang = offline terus.\n`);
+        process.exit(1);
+      } catch (e) {
+        if (e.code !== 'ESRCH') {
+          console.error(`\n❌ Ada proses lain memakai lock (PID ${pid}).\n`);
+          process.exit(1);
+        }
+        // ESRCH = PID mati → lock basi, ambil alih
+      }
+    }
+  } catch {}
+  try { fs.writeFileSync(LOCK_FILE, String(process.pid)); } catch {}
+  const release = () => { try { if (fs.readFileSync(LOCK_FILE, 'utf8').trim() === String(process.pid)) fs.unlinkSync(LOCK_FILE); } catch {} };
+  process.on('exit', release);
+  process.on('SIGINT', () => { release(); process.exit(0); });
+  process.on('SIGTERM', () => { release(); process.exit(0); });
+})();
+
 // ── Boot: restore EVERY saved Telegram account (multi-user) ──────
 // sessions.json is the source of truth. A fresh deployment seeds it from
 // the legacy env TELEGRAM_SESSION so old setups keep working untouched.
@@ -69,7 +96,13 @@ async function bootAccounts() {
 const bootOwner = await bootAccounts();
 initStore(bootOwner); // legacy flat channels.json migrates into this account
 initTrackings();
-startWebServer();
+// Web dashboard is OFF by default — full control lives in the Telegram bot.
+// Re-enable anytime with: ENABLE_WEB=1 npm start
+if (process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true') {
+  startWebServer();
+} else {
+  console.log('[Web] Disabled — bot-only mode (set ENABLE_WEB=1 to enable dashboard)');
+}
 startKeepAlive();
 
 // Banner jelas bila tidak ada akun yang terhubung (jalur lokal).

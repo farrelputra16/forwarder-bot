@@ -6,3 +6,5 @@ photo_cache/
 .web_secret
 
 *.png
+sessions.json
+bot.lock
