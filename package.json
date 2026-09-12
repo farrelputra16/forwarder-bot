@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
+    "login": "node gen.js",
     "test": "node --test --test-force-exit test/store.test.mjs"
   },
   "dependencies": {

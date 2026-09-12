@@ -335,6 +335,7 @@ function makeState(tid) {
     apiHash: '',
     sessionStr: '',
     dcId: 0,
+    username: '',
     listeners: new Map(),   // entityIdStr → { handler, builder }
     peerCache: new Map(),   // markedId → entity
     dialogs: { data: null, ts: 0 },
@@ -390,6 +391,7 @@ export async function initScraper(sessionStr, opts = {}) {
   st.apiHash = apiHash;
   st.sessionStr = sessionStr;
   st.dcId = dcId;
+  st.username = me.username || '';
   if (!_bootOwner) _bootOwner = tid;
   console.log(`[Scraper] Connected as @${me.username || tid} (${tid})`);
   return { tid, client };

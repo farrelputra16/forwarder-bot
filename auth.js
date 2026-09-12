@@ -58,5 +58,6 @@ export function verifyRefresh(token) {
 }
 
 export function publicBaseUrl() {
-  return process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || process.env.BASE_WEB_URL || '';
+  // Lokal: kosongkan env → otomatis localhost. Hosting (Render) isi sendiri.
+  return process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || process.env.BASE_WEB_URL || `http://localhost:${process.env.PORT || 3000}`;
 }

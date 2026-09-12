@@ -1,6 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid } from './scraper.js';
+import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
 import { loadUser, saveUser } from './store.js';
 import { signLinkToken, publicBaseUrl } from './auth.js';
@@ -11,6 +11,14 @@ function curTid(ctx) {
   const id = String(ctx?.from?.id || '');
   if (id && (getStateExact(id) || Object.keys(loadUser(id)).length)) return id;
   return getBootOwnerTid();
+}
+
+// Satu baris status scraper — ditempel di /start, menu, dashboard.
+function scraperStatusLine() {
+  let cs = [];
+  try { cs = listClients().filter(s => { try { return s.client && s.client.connected; } catch { return false; } }); } catch {}
+  if (!cs.length) return `\n\n⚠️ *Scraper OFFLINE* — forward mati.\nDi server jalankan: \`npm run login\``;
+  return `\n\n🟢 Scraper: ${cs.map(s => '@' + (s.username || s.tid)).join(', ')}`;
 }
 
 export const bot = new Telegraf(config.botToken);
@@ -111,21 +119,15 @@ bot.start(async (ctx) => {
   }
 
   await ctx.reply(
-    `👋 *Welcome to Forwarder Bot*\n\nI help you forward messages from Telegram channels — extract contract addresses or forward entire messages to your target channels.\n\n📡 ${a}/${e.length} channels active${linkNote}`,
+    `👋 *Welcome to Forwarder Bot*\n\nI help you forward messages from Telegram channels — extract contract addresses or forward entire messages to your target channels.\n\n📡 ${a}/${e.length} channels active${linkNote}${scraperStatusLine()}`,
     { parse_mode: 'Markdown', ...menuKb(ctx) }
   );
 });
 
 // ── Open Web Dashboard (auto-login hand-off) ─────────────────────
 bot.action('open_web', async (ctx) => {
-  const base = publicBaseUrl();
-  if (!base) {
-    return ctx.editMessageText(
-      `⚠️ *Web URL belum dikonfigurasi.*\n\nSet env \`PUBLIC_URL\` (atau deploy ke Render agar \`RENDER_EXTERNAL_URL\` tersedia), lalu coba lagi.`,
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'menu' }]] } }
-    );
-  }
-  const url = `${base.replace(/\/$/, '')}/?auth=${signLinkToken(curTid(ctx))}`;
+  const base = publicBaseUrl().replace(/\/$/, '');
+  const url = `${base}/?auth=${signLinkToken(curTid(ctx))}`;
   await ctx.editMessageText(
     `🌐 *Web Dashboard*\n━━━━━━━━━━━━━━━━━━━━\nTap the button below — the dashboard opens **already logged in as this account**.\n\n🔗 Login link valid for *5 minutes*.`,
     {
@@ -143,7 +145,7 @@ bot.action('menu', async (ctx) => {
   const e = Object.entries(chs);
   const a = e.filter(([, v]) => v.active).length;
   await ctx.editMessageText(
-    `🤖 *Forwarder Bot*\n\n📡 ${a}/${e.length} channels active`,
+    `🤖 *Forwarder Bot*\n\n📡 ${a}/${e.length} channels active${scraperStatusLine()}`,
     { parse_mode: 'Markdown', ...menuKb(ctx) }
   );
 });
@@ -163,7 +165,7 @@ bot.action('dashboard', async (ctx) => {
   const dup = e.filter(([, v]) => v.ignoreDuplicate).length;
 
   await ctx.editMessageText(
-    `📊 *Dashboard*\n━━━━━━━━━━━━━━━━━━━━\nTotal Channels: *${e.length}*\n🟢 Active: *${a}*  ·  🔴 Paused: *${p}*\n📋 Extract: *${ext}*  ·  📨 Forward: *${fwd}*\n📊 Tracking: *${trk}*  ·  🔁 Dup Ignore: *${dup}*\n━━━━━━━━━━━━━━━━━━━━`,
+    `📊 *Dashboard*\n━━━━━━━━━━━━━━━━━━━━\nTotal Channels: *${e.length}*\n🟢 Active: *${a}*  ·  🔴 Paused: *${p}*\n📋 Extract: *${ext}*  ·  📨 Forward: *${fwd}*\n📊 Tracking: *${trk}*  ·  🔁 Dup Ignore: *${dup}*\n━━━━━━━━━━━━━━━━━━━━${scraperStatusLine()}`,
     {
       parse_mode: 'Markdown',
       reply_markup: {

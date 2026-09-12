@@ -1,13 +1,26 @@
 import { bot } from './bot.js';
-import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt } from './scraper.js';
+import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fmt, listClients } from './scraper.js';
 import { config } from './config.js';
 import { initTrackings, addTracking } from './tracking.js';
 import { startWebServer } from './web.js';
-import { initStore, loadUser, saveUser, getSessions, saveSession, listUserIds, logActivity } from './store.js';
+import { initStore, loadUser, saveUser, getSessions, saveSession, deleteSession, listUserIds, logActivity } from './store.js';
+import fs from 'fs';
 
 // ── Boot: restore EVERY saved Telegram account (multi-user) ──────
 // sessions.json is the source of truth. A fresh deployment seeds it from
 // the legacy env TELEGRAM_SESSION so old setups keep working untouched.
+
+// Session yang dicabut server (logout dari HP / terminate all sessions) tidak
+// akan pernah bisa dipakai lagi — buang otomatis agar tidak di-retry tiap boot.
+const DEAD_SESSION = /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|AUTH_KEY_DUPLICATED|SESSION_EXPIRED/i;
+function clearEnvSession() {
+  try {
+    if (!fs.existsSync('.env')) return;
+    let env = fs.readFileSync('.env', 'utf8');
+    env = env.replace(/^TELEGRAM_SESSION=.*$/m, 'TELEGRAM_SESSION=');
+    fs.writeFileSync('.env', env);
+  } catch {}
+}
 
 async function bootAccounts() {
   const sessions = getSessions();
@@ -26,7 +39,12 @@ async function bootAccounts() {
         username: '',
       });
     } catch (e) {
-      console.warn('[Boot] Env session failed:', e.message);
+      const msg = e.errorMessage || e.message || '';
+      console.warn('[Boot] Env session failed:', msg);
+      if (DEAD_SESSION.test(msg)) {
+        console.warn('[Boot] Session .env sudah mati di server — dibersihkan. Login ulang via: npm run login');
+        clearEnvSession();
+      }
     }
     return bootTid;
   }
@@ -37,7 +55,12 @@ async function bootAccounts() {
       const r = await initScraper(sess.session, { apiId: sess.apiId, apiHash: sess.apiHash, dcId: sess.dc || 0 });
       if (!bootTid) bootTid = r.tid;
     } catch (e) {
-      console.warn(`[Boot] Session ${tid} failed: ${e.message}`);
+      const msg = e.errorMessage || e.message || '';
+      console.warn(`[Boot] Session ${tid} failed: ${msg}`);
+      if (DEAD_SESSION.test(msg)) {
+        deleteSession(tid);
+        console.warn(`[Boot] Session ${tid} yang mati dihapus dari sessions.json — login ulang via: npm run login`);
+      }
     }
   }
   return bootTid;
@@ -48,6 +71,19 @@ initStore(bootOwner); // legacy flat channels.json migrates into this account
 initTrackings();
 startWebServer();
 startKeepAlive();
+
+// Banner jelas bila tidak ada akun yang terhubung (jalur lokal).
+try {
+  const up = listClients().filter(s => { try { return s.client && s.client.connected; } catch { return false; } });
+  if (!up.length) {
+    console.log('\n⚠️  TIDAK ADA AKUN TELEGRAM YANG TERHUBUNG');
+    console.log('   Scraper MATI — bot & web hanya bisa atur setting, tidak bisa forward.');
+    console.log('   Perbaiki dengan:  npm run login');
+    console.log('   (masukkan kode OTP dari aplikasi Telegram)\n');
+  } else {
+    console.log(`[Boot] Akun aktif: ${up.map(s => '@' + (s.username || s.tid)).join(', ')}`);
+  }
+} catch {}
 
 // ── Forwarding Logic — hot path: zero blocking IO, targets fanned out in parallel ──
 const sendAll = async (targets, text, parseMode, tid) => {
