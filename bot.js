@@ -92,6 +92,10 @@ function manageKb(ch, info) {
     { text: info.mode === 'extract' ? '📨 Switch to Forward' : '📋 Switch to Extract', callback_data: `switchmode_${ch}` },
     { text: '🎯 Add Target', callback_data: `addtarget_${ch}` }
   ]);
+  const tgts = info.targets || (info.target ? [info.target] : []);
+  if (tgts.length > 1) {
+    rows.push(tgts.slice(0, 4).map((t, i) => ({ text: `❌ ${shortTitle(t, 12)}`, callback_data: `rmtgt_${ch}_${i}` })));
+  }
   rows.push([
     { text: '🗑 Delete', callback_data: `delete_${ch}` },
     { text: '◀️ Channels', callback_data: 'list_channels_0' }
