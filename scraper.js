@@ -316,6 +316,22 @@ export async function fetchFallbackMarketData(ca) {
   };
 }
 
+// Balapan sumber data: yang pertama ada harganya menang (untuk baseline).
+// Semua promise tetap di-handle agar tidak ada unhandled rejection.
+export function firstGood(promises) {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    if (!pending) return resolve(null);
+    promises.forEach(p => Promise.resolve(p).then(
+      v => {
+        if (v && parseFloat(v.price) > 0) resolve(v);
+        else if (--pending === 0) resolve(null);
+      },
+      () => { if (--pending === 0) resolve(null); }
+    ));
+  });
+}
+
 // Token yang baru lahir sering belum ter-index saat CA masuk —
 // tunggu & coba lagi bertahap (±60 dtk) sebelum menyerah.
 export async function waitForDexData(ca, delays = [10_000, 20_000, 30_000]) {

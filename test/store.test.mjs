@@ -267,3 +267,14 @@ test('dex: fallback returns null when mint does not exist anywhere', async () =>
     assert.equal(await fetchFallbackMarketData('NOPE11111111111111111111111111111111'), null);
   } finally { globalThis.fetch = orig; }
 });
+
+test('race: firstGood resolves the earliest usable price', async () => {
+  const { firstGood } = await import('../scraper.js');
+  const slowGood = new Promise(r => setTimeout(() => r({ price: '9', marketCap: 900 }), 30));
+  const fastGood = new Promise(r => setTimeout(() => r({ price: '1', marketCap: 100 }), 5));
+  const d = await firstGood([slowGood, fastGood]);
+  assert.equal(d.marketCap, 100, 'fastest usable result must win');
+  const none = await firstGood([Promise.resolve(null), Promise.resolve({ price: '0' }), Promise.reject(new Error('x'))]);
+  assert.equal(none, null, 'all-bad must resolve null without hanging');
+  assert.equal(await firstGood([]), null);
+});

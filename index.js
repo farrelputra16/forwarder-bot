@@ -1,5 +1,5 @@
 import { bot } from './bot.js';
-import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fetchFallbackMarketData, waitForDexData, fmt, listClients } from './scraper.js';
+import { initScraper, startKeepAlive, addChannelListener, forwardMessage, onMessage, extractAddresses, extractEVMAddresses, fetchDexScreenerInfo, fetchFallbackMarketData, firstGood, waitForDexData, fmt, listClients } from './scraper.js';
 import { config } from './config.js';
 import { initTrackings, addTracking } from './tracking.js';
 import { startWebServer } from './web.js';
@@ -158,17 +158,47 @@ onMessage(async (ownerTid, sourceChannel, message) => {
       if (isDup) continue;
 
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
+      // Semua sumber ditembak PARALEL sejak detik-0 (bersamaan kirim msg1):
+      // Dex (kaya data) dan Jupiter+on-chain (biasanya lebih cepat).
+      const dexP = fetchDexScreenerInfo(ca);
+      const fastP = fetchFallbackMarketData(ca);
       await sendAll(targets, msg1, 'html', ownerTid);
 
-      // The detail card ALWAYS goes out — rich data when DexScreener responds,
-      // a graceful fallback card when it doesn't. Never silently skipped.
-      let dexInfo = await fetchDexScreenerInfo(ca);
+      // BASELINE "called at" = data pertama yang ada harganya (t≈0, bukan t≈60s).
+      // Tracking didaftarkan SECEPATNYA — tidak menunggu kartu lengkap.
+      let tracked = false;
+      const registerTracking = (info) => {
+        if (tracked) return;
+        const px = parseFloat(info?.price) || 0;
+        if (!(channelInfo.tracking?.enabled && px > 0)) return;
+        tracked = true;
+        addTracking({
+            ca,
+            chain: info.chain || 'sol',
+            calledAtPrice: px,
+            calledAtMC: info.marketCap ? fmt(info.marketCap) : '?',
+            symbol: info.symbol || ca.slice(0, 6),
+            target: targets[0],
+            owner: ownerTid,
+            multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
+            alertInterval: (channelInfo.tracking.interval || 3600),
+            periodic: channelInfo.tracking.periodic || 'on',
+            xAlerts: channelInfo.tracking.xAlerts || 'on',
+        });
+      };
+      registerTracking(await firstGood([dexP, fastP]));
+
+      // Kartu: Dex diutamakan (paling kaya), lalu fallback, lalu tunggu.
+      // Kalau baseline tadi gagal total, enrichment jadi kesempatan terakhir.
+      let dexInfo = null;
+      try { dexInfo = await dexP; } catch {}
       if (!(dexInfo && parseFloat(dexInfo.price) > 0)) {
-        dexInfo = await fetchFallbackMarketData(ca); // Jupiter + on-chain
+        try { dexInfo = await fastP; } catch {}
       }
       if (!(dexInfo && parseFloat(dexInfo.price) > 0)) {
         dexInfo = await waitForDexData(ca); // token baru: beri waktu ter-index
       }
+      registerTracking(dexInfo);
       const price = dexInfo ? parseFloat(dexInfo.price) : 0;
       let msg2;
       let mc = '?';
@@ -193,22 +223,6 @@ onMessage(async (ownerTid, sourceChannel, message) => {
       }
       await sendAll(targets, msg2, 'html', ownerTid);
       logActivity('ca', `⚡ $${(dexInfo && dexInfo.symbol) || ca.slice(0, 6)} (${mc}) [${ownerTid}] → ${targets[0]}`);
-
-      if (channelInfo.tracking?.enabled && price > 0) {
-        addTracking({
-            ca,
-            chain: dexInfo.chain || 'sol',
-            calledAtPrice: price,
-            calledAtMC: mc,
-            symbol: dexInfo.symbol || ca.slice(0, 6),
-            target: targets[0],
-            owner: ownerTid,
-            multipliers: channelInfo.tracking.multipliers || [2, 3, 5, 10],
-            alertInterval: (channelInfo.tracking.interval || 3600),
-            periodic: channelInfo.tracking.periodic || 'on',
-            xAlerts: channelInfo.tracking.xAlerts || 'on',
-        });
-      }
     }
   }
 });
