@@ -217,3 +217,19 @@ test('dex: waitForDexData retries then resolves late data', async () => {
     assert.ok(calls >= 2, 'must have retried');
   } finally { globalThis.fetch = orig; }
 });
+
+test('dex: direct lookup rescues tokens that search misses', async () => {
+  const orig = globalThis.fetch;
+  const CA = 'RESCUEME11111111111111111111111111111111';
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/tokens/v1/')) {
+      return { ok: true, json: async () => [{ chainId: 'solana', baseToken: { address: CA, symbol: 'SAVED' }, priceUsd: '0.1' }] };
+    }
+    return { ok: true, json: async () => ({ pairs: [{ chainId: 'solana', baseToken: { address: 'OTHER', symbol: 'X' }, priceUsd: '9' }] }) };
+  };
+  try {
+    const { fetchDexScreenerInfo } = await import('../scraper.js');
+    const d = await fetchDexScreenerInfo(CA);
+    assert.ok(d && d.symbol === 'SAVED', 'direct lookup must rescue the token');
+  } finally { globalThis.fetch = orig; }
+});

@@ -158,20 +158,44 @@ export async function fetchDexScreenerInfo(ca) {
   return promise;
 }
 
+async function _searchExact(ca) {
+  const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${ca}`);
+  if (!res.ok) throw Object.assign(new Error(`dexscreener HTTP ${res.status}`), { retryable: res.status === 429 || res.status >= 500 });
+  const data = await res.json();
+  const pairs = data.pairs || [];
+  return {
+    count: pairs.length,
+    hit: pairs.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase()) || null,
+  };
+}
+
+// Direct lookup per mint — sering berhasil walau search belum meng-index.
+async function _directLookup(ca) {
+  const chains = /^0x[a-fA-F0-9]{40}$/.test(ca) ? ['eth', 'bsc', 'base'] : ['solana'];
+  const results = await Promise.all(chains.map(async (ch) => {
+    try {
+      const res = await fetch(`https://api.dexscreener.com/tokens/v1/${ch}/${ca}`);
+      if (!res.ok) return null;
+      const arr = await res.json();
+      const list = Array.isArray(arr) ? arr : [];
+      return list.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase()) || null;
+    } catch { return null; }
+  }));
+  return results.find(Boolean) || null;
+}
+
 async function _fetchDexScreener(ca, attempt = 0) {
   try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${ca}`);
-    // Rate-limited / transient server errors → retry with backoff instead of giving up
-    if (!res.ok) throw Object.assign(new Error(`dexscreener HTTP ${res.status}`), { retryable: res.status === 429 || res.status >= 500 });
-    const data = await res.json();
-    if (!data.pairs?.length) {
-      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (token terlalu baru / CA salah)`);
-      return null;
-    }
-    // WAJIB cocok persis — jangan pernah pakai pair[0] karena bisa jadi token lain!
-    const pair = data.pairs.find(p => p.baseToken?.address?.toLowerCase() === ca.toLowerCase());
+    const s = await _searchExact(ca);
+    let pair = s.hit;
     if (!pair) {
-      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (tidak ada pair persis)`);
+      if (s.count > 0) console.warn(`[DexScreener] ${ca.slice(0, 8)}… search ada ${s.count} pair tapi tak ada yang cocok persis — coba direct lookup`);
+      else console.warn(`[DexScreener] ${ca.slice(0, 8)}… search kosong — coba direct lookup`);
+      pair = await _directLookup(ca);
+      if (pair) console.log(`[DexScreener] ${ca.slice(0, 8)}… ketemu via direct lookup ✅`);
+    }
+    if (!pair) {
+      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (token terlalu baru / CA salah)`);
       return null;
     }
     return {
