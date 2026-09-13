@@ -227,6 +227,95 @@ async function _fetchDexScreener(ca, attempt = 0) {
   }
 }
 
+// ── Fallback: Jupiter price + on-chain mint (saat DexScreener kosong) ──
+// Token baru / belum ada pool tidak ada di Dex — tapi Jupiter sering sudah
+// punya harga & likuiditas, dan mint selalu bisa dibaca on-chain (supply,
+// nama, otoritas). Gabungan keduanya = kartu lengkap tanpa Dex.
+
+const JUP_PRICE_URL = 'https://lite-api.jup.ag/price/v3?ids=';
+const SOL_RPC_URL = 'https://api.mainnet-beta.solana.com';
+
+function isEvmAddr(ca) {
+  return /^0x[a-fA-F0-9]{40}$/.test(ca);
+}
+
+export async function fetchJupiterInfo(ca) {
+  if (isEvmAddr(ca)) return null;
+  try {
+    const res = await fetch(JUP_PRICE_URL + ca, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const e = j?.[ca];
+    if (!e || !parseFloat(e.usdPrice)) return null;
+    return {
+      price: parseFloat(e.usdPrice),
+      liquidity: parseFloat(e.liquidity) || 0,
+      launchpad: e.launchpad || '',
+      createdAt: e.createdAt || '',
+    };
+  } catch { return null; }
+}
+
+export async function fetchOnchainMint(ca) {
+  if (isEvmAddr(ca)) return null;
+  try {
+    const res = await fetch(SOL_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params: [ca, { encoding: 'jsonParsed' }] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    const v = (await res.json())?.result?.value;
+    const info = v?.data?.parsed?.info;
+    if (!info) return null; // mint tidak ada di chain
+    const decimals = parseInt(info.decimals) || 0;
+    const supply = parseFloat(info.supply) / Math.pow(10, decimals);
+    let name = '', symbol = '';
+    for (const e of info.extensions || []) {
+      if (e?.extension === 'tokenMetadata' && e.state) {
+        name = e.state.name || '';
+        symbol = e.state.symbol || '';
+      }
+    }
+    return {
+      supply: Number.isFinite(supply) ? supply : 0,
+      decimals,
+      name, symbol,
+      isToken2022: (v.owner || '').startsWith('TokenzQd'),
+      mintRenounced: info.mintAuthority == null,
+      freezeRenounced: info.freezeAuthority == null,
+    };
+  } catch { return null; }
+}
+
+export async function fetchFallbackMarketData(ca) {
+  const [jup, chain] = await Promise.all([fetchJupiterInfo(ca), fetchOnchainMint(ca)]);
+  if (!jup && !chain) return null;
+  const price = jup?.price || 0;
+  const supply = chain?.supply || 0;
+  return {
+    chain: 'sol',
+    symbol: chain?.symbol || '',
+    name: chain?.name || '',
+    price: price ? String(price) : '0',
+    marketCap: price && supply ? price * supply : 0,
+    liquidity: jup?.liquidity || 0,
+    volume24h: 0,
+    volume1h: 0,
+    priceChange1h: undefined,
+    fdv: 0,
+    url: '',
+    pairAddress: '',
+    dexId: jup?.launchpad || (chain?.isToken2022 ? 'token-2022' : ''),
+    imageUrl: '',
+    socials: [],
+    _fallback: 'jupiter+onchain',
+    _mintRenounced: chain?.mintRenounced,
+    _freezeRenounced: chain?.freezeRenounced,
+  };
+}
+
 // Token yang baru lahir sering belum ter-index saat CA masuk —
 // tunggu & coba lagi bertahap (±60 dtk) sebelum menyerah.
 export async function waitForDexData(ca, delays = [10_000, 20_000, 30_000]) {

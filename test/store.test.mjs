@@ -233,3 +233,37 @@ test('dex: direct lookup rescues tokens that search misses', async () => {
     assert.ok(d && d.symbol === 'SAVED', 'direct lookup must rescue the token');
   } finally { globalThis.fetch = orig; }
 });
+
+test('dex: jupiter+onchain fallback merges into full card data', async () => {
+  const orig = globalThis.fetch;
+  const CA = 'FB11111111111111111111111111111111111111';
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('dexscreener.com')) return { ok: true, json: async () => ({ pairs: [] }) };
+    if (u.includes('jup.ag')) return { ok: true, json: async () => ({ [CA]: { usdPrice: 0.002, liquidity: 100, launchpad: 'pump.fun' } }) };
+    const mintInfo = { supply: '1000000000', decimals: 6, mintAuthority: null, freezeAuthority: null, extensions: [{ extension: 'tokenMetadata', state: { name: 'Fallback', symbol: 'FB' } }] };
+    return { ok: true, json: async () => ({ result: { value: { owner: 'TokenzQdX', data: { parsed: { info: mintInfo } } } } }) };
+  };
+  try {
+    const { fetchFallbackMarketData } = await import('../scraper.js');
+    const d = await fetchFallbackMarketData(CA);
+    assert.ok(d, 'fallback must produce data');
+    assert.equal(d.symbol, 'FB');
+    assert.equal(d.marketCap, 0.002 * 1000, 'MC = price x supply');
+    assert.equal(d.liquidity, 100);
+    assert.equal(d.dexId, 'pump.fun');
+  } finally { globalThis.fetch = orig; }
+});
+
+test('dex: fallback returns null when mint does not exist anywhere', async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('dexscreener.com') || u.includes('jup.ag')) return { ok: true, json: async () => ({ pairs: [] }) };
+    return { ok: true, json: async () => ({ result: { value: null } }) };
+  };
+  try {
+    const { fetchFallbackMarketData } = await import('../scraper.js');
+    assert.equal(await fetchFallbackMarketData('NOPE11111111111111111111111111111111'), null);
+  } finally { globalThis.fetch = orig; }
+});
