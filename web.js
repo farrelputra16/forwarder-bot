@@ -42,8 +42,78 @@ export function startWebServer() {
     res.json({ masterPassword: !!WEB_PASSWORD });
   });
 
-  // NOTE: MTProto login lives ONLY in the Telegram bot chat (/login) and the
-  // QR flow below — the web never asks for API credentials or OTP codes.
+  // ── Phone+OTP login (server app credentials — user types NO api keys) ──
+  // Typing the OTP into THIS browser form is safe: Telegram only burns
+  // codes shared inside Telegram chats. Same mechanism as Telegram Web.
+  const PENDING_OTP = new Map();
+
+  app.post('/api/auth/otp/start', async (req, res) => {
+    const apiId = parseInt(process.env.TELEGRAM_API_ID);
+    const apiHash = process.env.TELEGRAM_API_HASH;
+    if (!apiId || !apiHash) return res.status(400).json({ error: 'TELEGRAM_API_ID/HASH missing in server .env' });
+    const phone = String(req.body?.phone || '').replace(/[\s-]/g, '');
+    if (!/^\+?\d{7,15}$/.test(phone)) return res.status(400).json({ error: 'Invalid phone number. Example: +62812…' });
+    try {
+      const { Api } = await import('telegram');
+      const { StringSession } = await import('telegram/sessions/index.js');
+      const { TelegramClient } = await import('telegram');
+      const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 3 });
+      await client.connect();
+      const sent = await client.invoke(new Api.auth.SendCode({
+        phoneNumber: phone, apiId, apiHash,
+        settings: new Api.CodeSettings({ allowFlashcall: true, currentNumber: true, appHash: '' }),
+      }));
+      const loginToken = crypto.randomUUID();
+      PENDING_OTP.set(loginToken, { client, apiId, apiHash, phone, phoneCodeHash: sent.phoneCodeHash, state: 'code' });
+      setTimeout(() => { PENDING_OTP.delete(loginToken); client.destroy().catch(() => {}); }, 10 * 60 * 1000);
+      res.json({ ok: true, loginToken });
+    } catch (err) {
+      const sec = err.seconds || (err.errorMessage === 'FLOOD' ? 300 : 0);
+      if (sec > 0) return res.status(429).json({ error: `Telegram flood wait: wait ~${Math.ceil(sec / 60)} min`, waitSeconds: sec });
+      res.status(400).json({ error: err.errorMessage || err.message });
+    }
+  });
+
+  app.post('/api/auth/otp/verify', async (req, res) => {
+    const { loginToken, code, password } = req.body || {};
+    const st = PENDING_OTP.get(String(loginToken || ''));
+    if (!st) return res.status(404).json({ error: 'Login session expired — start again' });
+    try {
+      const { Api } = await import('telegram');
+      if (st.state === 'password') {
+        const pwd = await st.client.invoke(new Api.account.GetPassword());
+        const { computeCheck } = await import('telegram/Password.js');
+        await st.client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(pwd, String(password)) }));
+      } else {
+        await st.client.invoke(new Api.auth.SignIn({
+          phoneNumber: st.phone, phoneCodeHash: st.phoneCodeHash, phoneCode: String(code),
+        }));
+      }
+      const me = await st.client.getMe().catch(() => null);
+      const sessionStr = st.client.session.save();
+      await st.client.destroy().catch(() => {});
+      const { tid } = await initScraper(sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: 0 });
+      saveSession(tid, { session: sessionStr, apiId: st.apiId, apiHash: st.apiHash, dc: 0, username: me?.username || '' });
+      if (!Object.keys(loadUser(tid)).length) {
+        const legacy = loadUser('_legacy');
+        if (Object.keys(legacy).length) { saveUser(tid, legacy); deleteUser('_legacy'); }
+      }
+      PENDING_OTP.delete(loginToken);
+      const deviceId = _registerDevice(tid);
+      logActivity('channel', `👤 @${me?.username || tid} logged in (OTP)`);
+      res.json({ ok: true, token: signToken(tid), refresh: signRefresh(tid, deviceId), tid, username: me?.username || '' });
+    } catch (err) {
+      if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+        st.state = 'password';
+        return res.json({ ok: true, twoFactor: true });
+      }
+      if (err.errorMessage === 'PHONE_CODE_INVALID' || err.errorMessage === 'PHONE_CODE_EXPIRED') {
+        return res.status(400).json({ error: 'Wrong/expired code. Retype the correct code.' });
+      }
+      if (err.errorMessage === 'PASSWORD_HASH_INVALID') return res.status(400).json({ error: 'Wrong 2FA password' });
+      res.status(500).json({ error: err.errorMessage || err.message });
+    }
+  });
 
   // ── Auth middleware ────────────────────────────────────────────
   app.get('/api/auth/options', async (req, res) => {

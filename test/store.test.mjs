@@ -301,12 +301,34 @@ test('race: firstGood resolves the earliest usable price', async () => {
   assert.equal(await firstGood([]), null);
 });
 
-test('auth: tg://login URL builder round-trips token bytes', async () => {
-  const { buildTgLoginUrl } = await import('../bot.js');
-  const token = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
-  const url = buildTgLoginUrl(token);
-  assert.ok(url.startsWith('tg://login?token='), 'must be a tappable tg login URL');
-  const b64 = url.split('token=')[1];
-  assert.deepEqual(Buffer.from(b64, 'base64url'), token, 'token must survive base64url round-trip');
-  assert.ok(!/[+/=]/.test(b64), 'base64url must be URL-safe (no +/=)');
+test('auth: web OTP endpoints validate input without touching Telegram', async () => {
+  const { startWebServer } = await import('../web.js');
+  const server = startWebServer();
+  try {
+    await new Promise(r => server.once('listening', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = (p, body) => fetch(base + p, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+    // no server creds in test env → explicit 400, no network attempted
+    let r = await post('/api/auth/otp/start', { phone: '+62812' });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /missing in server/i);
+
+    // with creds present: bad phone rejected before any network call
+    process.env.TELEGRAM_API_ID = '12345';
+    process.env.TELEGRAM_API_HASH = 'x'.repeat(32);
+    r = await post('/api/auth/otp/start', { phone: 'not-a-number' });
+    assert.equal(r.status, 400);
+    assert.match((await r.json()).error, /Invalid phone/);
+    delete process.env.TELEGRAM_API_ID;
+    delete process.env.TELEGRAM_API_HASH;
+
+    // unknown loginToken → 404, no crash
+    r = await post('/api/auth/otp/verify', { loginToken: 'nope', code: '1' });
+    assert.equal(r.status, 404);
+  } finally {
+    server.close();
+  }
 });

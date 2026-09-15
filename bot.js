@@ -1,8 +1,8 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients, ensureAccessible, getAccessibleChannels, initScraper } from './scraper.js';
+import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients, ensureAccessible, getAccessibleChannels } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
-import { loadUser, saveUser, saveSession, deleteUser } from './store.js';
+import { loadUser, saveUser } from './store.js';
 import { signLinkToken, publicBaseUrl } from './auth.js';
 
 // Workspace scope: the bot user's OWN account when it exists in the store
@@ -204,7 +204,7 @@ bot.action('dashboard', async (ctx) => {
 
 bot.action('help', async (ctx) => {
   await ctx.editMessageText(
-    `❓ *Help & Commands*\n━━━━━━━━━━━━━━━━━━━━\n\n*/start* — Open main menu\n*/login* — Connect your Telegram account (tap-to-approve, no OTP typing)\n*/cancel* — Cancel the running process\n*/refresh \\<CA\\> [chain]* — Look up token info\n*/track \\<channel\\> \\<on|off\\>* — Toggle price tracking\n*/track\\_set \\<channel\\> \\<mults\\> \\<sec\\>* — Configure tracking\n\n💡 Use the buttons below to manage everything.\n━━━━━━━━━━━━━━━━━━━━`,
+    `❓ *Help & Commands*\n━━━━━━━━━━━━━━━━━━━━\n\n*/start* — Open main menu\n*/login* — Connect your Telegram account (via dashboard)\n*/cancel* — Cancel the running process\n*/refresh \\<CA\\> [chain]* — Look up token info\n*/track \\<channel\\> \\<on|off\\>* — Toggle price tracking\n*/track\\_set \\<channel\\> \\<mults\\> \\<sec\\>* — Configure tracking\n\n💡 Use the buttons below to manage everything.\n━━━━━━━━━━━━━━━━━━━━`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -216,161 +216,27 @@ bot.action('help', async (ctx) => {
   );
 });
 
-// ── Account Login (tap-to-approve, never type OTP codes) ──────────
-// Security: Telegram permanently blocks login codes that are typed into
-// any chat (anti-phishing). So this bot NEVER asks for OTP codes — login
-// is approved by tapping a tg://login link (same mechanism as QR scan).
-// Only the static 2FA cloud password may be typed here (auto-deleted).
-
-// Build a tappable native login URL from a gramjs QR-login token.
-export function buildTgLoginUrl(token) {
-  const buf = Buffer.isBuffer(token) ? token : Buffer.from(token);
-  return `tg://login?token=${buf.toString('base64url')}`;
-}
-
-const loginPending = new Map(); // tgUserId -> { client, apiId, apiHash, mode, done, pwResolve, pwReject, msgId, timer }
-const LOGIN_TTL = 5 * 60 * 1000; // QR login links expire after ~5 min
-
-function clearLogin(uid, destroy = true) {
-  const st = loginPending.get(String(uid));
-  if (!st) return;
-  loginPending.delete(String(uid));
-  if (st.timer) clearTimeout(st.timer);
-  if (destroy) st.client?.destroy?.().catch(() => {});
-}
-
-async function finalizeBotLogin(ctx, st) {
-  const uid = String(ctx.from.id);
-  const me = await st.client.getMe().catch(() => null);
-  // Isolation guard: the stored session MUST belong to this chat's sender.
-  if (!me || String(me.id) !== uid) {
-    try { await st.client.destroy().catch(() => {}); } catch {}
-    clearLogin(uid, false);
-    return ctx.reply('⚠️ Login must use the *same Telegram account* as this chat. Start over with /login.', { parse_mode: 'Markdown' });
-  }
-  const sessionStr = st.client.session.save();
-  try { await st.client.destroy().catch(() => {}); } catch {}
-  clearLogin(uid, false);
-
-  const { tid } = await initScraper(sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: 0 });
-  saveSession(tid, { session: sessionStr, apiId: st.apiId, apiHash: st.apiHash, dc: 0, username: me?.username || '' });
-  if (!Object.keys(loadUser(tid)).length) {
-    const legacy = loadUser('_legacy');
-    if (Object.keys(legacy).length) { saveUser(tid, legacy); deleteUser('_legacy'); }
-  }
-  const chs = loadUser(tid);
-  let n = 0;
-  for (const src of Object.keys(chs)) {
-    try { await addChannelListener(src, tid); n++; } catch {}
-  }
-  await ctx.reply(
-    `✅ *Connected as @${me?.username || tid}!*\n\nThis account's scraper is active${n ? ` — ${n} channel(s) listening` : ''}.\nOpen the dashboard with the button below (auto-login, no password).`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: [[{ text: '🌐 Open Dashboard', callback_data: 'open_web' }], [{ text: '🏠 Menu', callback_data: 'menu' }]] },
-    }
-  );
-}
-
+// ── Account Login → happens on the web dashboard ─────────────────
+// Rationale: OTP codes typed into ANY Telegram chat get permanently
+// blocked by Telegram's anti-phishing protection (and tap-to-approve
+// links are unreliable across clients), so /login simply hands off to
+// the dashboard: phone+OTP in a browser form (safe, like Telegram Web),
+// QR scan, widget, or bot-code paste — all Telegram-mediated.
 async function startBotLogin(ctx, viaButton) {
-  const uid = String(ctx.from.id);
-  clearLogin(uid);
-  userState.set(ctx.from.id, { step: 'LOGIN_API_ID' });
   const text =
-    `🔑 *Connect Account — 1/3*\n\nSend your *API ID* (number, from my.telegram.org/apps).\n\nEach user logs in with their *own* credentials — nothing shared.\n\nCancel anytime: /cancel`;
-  if (viaButton) await ctx.editMessageText(text, { parse_mode: 'Markdown' });
-  else await ctx.reply(text, { parse_mode: 'Markdown' });
+    `🔑 *Connect Account*\n\n` +
+    `Login happens on the *web dashboard* — it takes 1 minute:\n\n` +
+    `1️⃣ Open the dashboard (button below — you arrive logged in)\n` +
+    `2️⃣ Enter your phone number, type the OTP *in the browser*, done.\n\n` +
+    `Typing OTP codes into a chat gets them blocked by Telegram, so the bot never asks for them.`;
+  const kb = { inline_keyboard: [[{ text: '🌐 Open Dashboard', callback_data: 'open_web' }], [{ text: '🏠 Menu', callback_data: 'menu' }]] };
+  if (viaButton) await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: kb });
+  else await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: kb });
 }
-
-// Runs the QR-link login flow: Telegram shows its own approval screen,
-// the user taps approve — no code is ever typed, so nothing can be blocked.
-async function startQrLogin(ctx, apiId, apiHash) {
-  const uid = String(ctx.from.id);
-  clearLogin(uid);
-  let client;
-  try {
-    const { TelegramClient } = await import('telegram');
-    const { StringSession } = await import('telegram/sessions/index.js');
-    client = new TelegramClient(new StringSession(''), Number(apiId), String(apiHash), { connectionRetries: 3 });
-    await client.connect();
-  } catch (err) {
-    userState.delete(ctx.from.id);
-    return ctx.reply(`⚠️ Connection failed: ${err.errorMessage || err.message}\n\nCheck the API ID/Hash, then /login again.`);
-  }
-  const rec = { client, apiId: Number(apiId), apiHash: String(apiHash), mode: 'qr', done: false, pwResolve: null, pwReject: null, msgId: null, timer: null };
-  const timer = setTimeout(() => {
-    if (loginPending.get(uid) === rec) {
-      clearLogin(uid);
-      userState.delete(ctx.from.id);
-      ctx.reply('⚠️ Login link expired (5 min) — tap /login for a fresh one.').catch(() => {});
-    }
-  }, LOGIN_TTL);
-  rec.timer = timer;
-  loginPending.set(uid, rec);
-
-  let statusMsg = null;
-  try {
-    statusMsg = await ctx.reply('🔑 *Connect Account — 3/3*\n\nGenerating your secure login link…', { parse_mode: 'Markdown' });
-    rec.msgId = statusMsg?.message_id;
-  } catch {}
-
-  client.signInUserWithQrCode(
-    { apiId: Number(apiId), apiHash: String(apiHash) },
-    {
-      qrCode: async ({ token }) => {
-        if (loginPending.get(uid) !== rec || rec.done) return;
-        const url = buildTgLoginUrl(token);
-        const text =
-          `🔑 *Connect Account — tap to approve*\n\n` +
-          `Tap the button below. It opens Telegram's *own* login screen — approve it there. You type *nothing*.\n\n` +
-          `⚠️ *Never type login codes into any chat* — Telegram blocks codes that get shared.`;
-        const kb = { inline_keyboard: [[{ text: '✅ Approve Login', url }], [{ text: '🚫 Cancel', callback_data: 'login_cancel' }]] };
-        try {
-          if (rec.msgId) await ctx.telegram.editMessageText(ctx.chat.id, rec.msgId, undefined, text, { parse_mode: 'Markdown', reply_markup: kb });
-          else {
-            const m = await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
-            rec.msgId = m?.message_id;
-          }
-        } catch {}
-      },
-      password: async () => {
-        if (loginPending.get(uid) !== rec) throw new Error('cancelled');
-        userState.set(ctx.from.id, { step: 'LOGIN_PASSWORD' });
-        await ctx.reply('🔐 This account uses *2FA*. Send your *cloud password*.\n\n_(I will auto-delete it.)_', { parse_mode: 'Markdown' }).catch(() => {});
-        return new Promise((resolve, reject) => { rec.pwResolve = resolve; rec.pwReject = reject; });
-      },
-      onError: async () => true, // stop on error; reported below
-    }
-  ).then(async () => {
-    if (loginPending.get(uid) !== rec || rec.done) return;
-    rec.done = true;
-    userState.delete(ctx.from.id);
-    await finalizeBotLogin(ctx, rec);
-  }).catch(async (err) => {
-    if (loginPending.get(uid) !== rec || rec.done) return; // cancelled/timeout already handled
-    if (/cancelled/i.test(err?.message || '')) return;
-    clearLogin(uid);
-    userState.delete(ctx.from.id);
-    await ctx.reply(`⚠️ Login failed: ${err?.errorMessage || err?.message || 'unknown error'}\n\nTry /login again.`).catch(() => {});
-  });
-}
-
-bot.action('login_cancel', async (ctx) => {
-  const uid = String(ctx.from.id);
-  const rec = loginPending.get(uid);
-  if (rec) { try { rec.pwReject?.(new Error('cancelled')); } catch {} }
-  clearLogin(uid);
-  userState.delete(ctx.from.id);
-  try { await ctx.answerCbQuery('Cancelled'); } catch {}
-  await ctx.reply('🚫 Cancelled.').catch(() => {});
-});
 
 bot.action('login_start', (ctx) => startBotLogin(ctx, true));
 bot.command('login', (ctx) => startBotLogin(ctx, false));
 bot.command('cancel', (ctx) => {
-  const rec = loginPending.get(String(ctx.from.id));
-  if (rec) { try { rec.pwReject?.(new Error('cancelled')); } catch {} }
-  clearLogin(ctx.from.id);
   userState.delete(ctx.from.id);
   ctx.reply('🚫 Cancelled.');
 });
@@ -852,40 +718,7 @@ bot.on('text', async (ctx) => {
   const s = userState.get(ctx.from.id);
   if (!s) return;
 
-  // ── Login wizard steps (didahulukan) ──
-  // Each user brings their OWN API ID/Hash — the server never needs yours.
-  if (s.step === 'LOGIN_API_ID') {
-    const apiId = parseInt((ctx.message.text || '').trim());
-    if (!apiId) return ctx.reply('⚠️ API ID must be a number. Try again, or /cancel to abort.');
-    s.apiId = apiId;
-    s.step = 'LOGIN_API_HASH';
-    await ctx.reply('🔑 *Connect Account — 2/3*\n\nSend your *API Hash*.\n\n_(This message auto-deletes after reading.)_', { parse_mode: 'Markdown' });
-    return;
-  }
-  if (s.step === 'LOGIN_API_HASH') {
-    const apiHash = (ctx.message.text || '').trim();
-    if (apiHash.length < 8) return ctx.reply('⚠️ Invalid API Hash. Try again, or /cancel to abort.');
-    try { await ctx.deleteMessage().catch(() => {}); } catch {}
-    userState.delete(ctx.from.id);
-    await startQrLogin(ctx, s.apiId, apiHash);
-    return;
-  }
-
-  if (s.step === 'LOGIN_PASSWORD') {
-    // 2FA cloud password for the QR-link flow: pass it to the waiting
-    // sign-in. gramjs re-invokes its password callback on a wrong password,
-    // so the user is re-prompted automatically (state stays until success).
-    const password = ctx.message.text || '';
-    if (!password) return;
-    const st = loginPending.get(String(ctx.from.id));
-    if (!st || !st.pwResolve) { userState.delete(ctx.from.id); return ctx.reply('⚠️ Login session expired — /login again.'); }
-    try { await ctx.deleteMessage().catch(() => {}); } catch {}
-    const resolve = st.pwResolve;
-    st.pwResolve = null;
-    st.pwReject = null;
-    resolve(String(password));
-    return;
-  }
+  // (Account login lives on the web dashboard — see startBotLogin.)
 
   if (s.step === 'LINK') {
     const raw = (ctx.message.text || '').trim();

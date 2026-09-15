@@ -219,6 +219,25 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
   <h1 style="font-size:1.15rem;font-weight:800">Forwarder Bot</h1>
   <p class="hint" id="lock-sub" style="text-align:center;margin-top:-0.6rem">Login with your own Telegram account —<br>your channels stay private to you.</p>
 
+  <!-- Primary: phone + OTP right here (safe: typed in browser, never in a chat) -->
+  <div id="otp-wrap" style="display:flex;flex-direction:column;gap:.5rem;width:300px;max-width:86vw">
+    <div id="otp-step1" style="display:flex;flex-direction:column;gap:.5rem">
+      <input id="otp-phone" placeholder="+62… phone number" autocomplete="off" style="text-align:center" onkeydown="if(event.key==='Enter')otpStart()">
+      <button class="btn btn-p" onclick="otpStart()" id="otp-btn">Send Code</button>
+    </div>
+    <div id="otp-step2" style="display:none;flex-direction:column;gap:.5rem">
+      <p class="hint" style="text-align:center">Code sent — check your Telegram app,<br>then type it <b>here</b> (never in a chat).</p>
+      <input id="otp-code" placeholder="Login code" style="text-align:center;letter-spacing:.3em" onkeydown="if(event.key==='Enter')otpVerify()">
+      <button class="btn btn-p" onclick="otpVerify()">Verify</button>
+    </div>
+    <div id="otp-step3" style="display:none;flex-direction:column;gap:.5rem">
+      <p class="hint" style="text-align:center">☁️ 2FA enabled — enter cloud password.</p>
+      <input id="otp-pass" type="password" placeholder="Cloud password" style="text-align:center" onkeydown="if(event.key==='Enter')otpVerify()">
+      <button class="btn btn-p" onclick="otpVerify()">Verify</button>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;width:300px;max-width:86vw;color:var(--text3);font-size:.6rem"><div style="flex:1;height:1px;background:var(--border)"></div>or<div style="flex:1;height:1px;background:var(--border)"></div></div>
+
   <!-- Primary: scan QR with the phone app (no typing at all) -->
   <div id="qr-wrap" style="display:flex;flex-direction:column;align-items:center;gap:.4rem;width:300px;max-width:86vw">
     <div id="qr-box" style="background:#fff;border-radius:14px;padding:10px;line-height:0;min-width:220px;min-height:220px;display:flex;align-items:center;justify-content:center">
@@ -315,6 +334,31 @@ function saveTokens(d){
   TOKEN=d.token;localStorage.setItem('fw_token',d.token);
   if(d.refresh)localStorage.setItem('fw_refresh',d.refresh);
 }
+// Phone + OTP login (server app credentials — no api keys to type, and the
+// code goes into this browser form, never into a Telegram chat).
+let OTP_TOKEN=null;
+window.otpStart=async function(){
+  const btn=$('#otp-btn');btn.disabled=true;btn.textContent='Sending…';lgErr('');
+  try{
+    const d=await api('/auth/otp/start',{method:'POST',body:JSON.stringify({phone:$('#otp-phone').value.trim()})});
+    OTP_TOKEN=d.loginToken;
+    $('#otp-step1').style.display='none';$('#otp-step2').style.display='flex';$('#otp-code').focus();
+  }catch(e){lgErr(e.message)}
+  finally{btn.disabled=false;btn.textContent='Send Code'}
+};
+window.otpVerify=async function(){
+  lgErr('');
+  try{
+    const d=await api('/auth/otp/verify',{method:'POST',body:JSON.stringify({
+      loginToken:OTP_TOKEN,code:$('#otp-code')?.value?.trim(),password:$('#otp-pass')?.value,
+    })});
+    if(d.twoFactor){$('#otp-step2').style.display='none';$('#otp-step3').style.display='flex';$('#otp-pass').focus();return}
+    saveTokens(d);
+    $('#lock').classList.remove('open');
+    toast(`👋 Welcome @${d.username||d.tid}`,'ok');
+    bootAfterAuth();
+  }catch(e){lgErr(e.message)}
+};
 // Silent re-login from a remembered device — no OTP, no Telegram calls
 let _refreshing=null;
 async function tryRefresh(){
