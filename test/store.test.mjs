@@ -300,3 +300,13 @@ test('race: firstGood resolves the earliest usable price', async () => {
   assert.equal(none, null, 'all-bad must resolve null without hanging');
   assert.equal(await firstGood([]), null);
 });
+
+test('auth: tg://login URL builder round-trips token bytes', async () => {
+  const { buildTgLoginUrl } = await import('../bot.js');
+  const token = Buffer.from(Array.from({ length: 32 }, (_, i) => i));
+  const url = buildTgLoginUrl(token);
+  assert.ok(url.startsWith('tg://login?token='), 'must be a tappable tg login URL');
+  const b64 = url.split('token=')[1];
+  assert.deepEqual(Buffer.from(b64, 'base64url'), token, 'token must survive base64url round-trip');
+  assert.ok(!/[+/=]/.test(b64), 'base64url must be URL-safe (no +/=)');
+});
