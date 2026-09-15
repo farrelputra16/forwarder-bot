@@ -104,13 +104,12 @@ function manageKb(ch, info) {
 }
 
 function menuKb(ctx) {
-  const webOn = process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true';
   return {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📡 My Channels', callback_data: 'list_channels_0' }],
         [{ text: '➕ Add Channel', callback_data: 'add_channel' }],
-        ...(webOn ? [[{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }]] : []),
+        [{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }],
         [{ text: '📊 Dashboard', callback_data: 'dashboard' }],
         [{ text: '❓ Help', callback_data: 'help' }]
       ]
@@ -140,13 +139,6 @@ bot.start(async (ctx) => {
 
 // ── Open Web Dashboard (auto-login hand-off) ─────────────────────
 bot.action('open_web', async (ctx) => {
-  const webOn = process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true';
-  if (!webOn) {
-    return ctx.editMessageText(
-      `🌐 *Web Dashboard sedang nonaktif.*\n\nSemua pengaturan dilakukan di sini (bot). Untuk menyalakan web: \`ENABLE_WEB=1 npm start\``,
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'menu' }]] } }
-    );
-  }
   const base = publicBaseUrl().replace(/\/$/, '');
   const token = signLinkToken(String(ctx.from.id));
   // Telegram rejects localhost URLs in buttons — send a paste-able code instead.

@@ -96,13 +96,7 @@ async function bootAccounts() {
 const bootOwner = await bootAccounts();
 initStore(bootOwner); // legacy flat channels.json migrates into this account
 initTrackings();
-// Web dashboard is OFF by default — full control lives in the Telegram bot.
-// Re-enable anytime with: ENABLE_WEB=1 npm start
-if (process.env.ENABLE_WEB === '1' || String(process.env.ENABLE_WEB).toLowerCase() === 'true') {
-  startWebServer();
-} else {
-  console.log('[Web] Disabled — bot-only mode (set ENABLE_WEB=1 to enable dashboard)');
-}
+startWebServer();
 startKeepAlive();
 
 // Banner jelas bila tidak ada akun yang terhubung (jalur lokal).
