@@ -20,9 +20,6 @@ import { config } from './config.js';
 
 const __dirname = join(fileURLToPath(import.meta.url), '..');
 
-// ── Pending interactive MTProto logins (API ID/Hash + OTP) ──────
-const PENDING = new Map();
-
 export function startWebServer() {
   const app = express();
   app.use(express.json());
@@ -45,93 +42,8 @@ export function startWebServer() {
     res.json({ masterPassword: !!WEB_PASSWORD });
   });
 
-  // ── Per-account Telegram login (API ID/Hash + phone + OTP) ─────
-  app.post('/api/auth/start', async (req, res) => {
-    const { apiId, apiHash, phone, dcId } = req.body || {};
-    if (!apiId || !apiHash || !phone) return res.status(400).json({ error: 'apiId, apiHash, phone required' });
-    try {
-      const { Api } = await import('telegram');
-      const { StringSession } = await import('telegram/sessions/index.js');
-      const clientOpts = { connectionRetries: 3 };
-      if (parseInt(dcId) > 0) clientOpts.dcId = parseInt(dcId);
-      const client = new (await import('telegram')).TelegramClient(new StringSession(''), Number(apiId), String(apiHash), clientOpts);
-      await client.connect();
-      const sent = await client.invoke(new Api.auth.SendCode({
-        phoneNumber: String(phone).trim(),
-        apiId: Number(apiId),
-        apiHash: String(apiHash),
-        settings: new Api.CodeSettings({ allowFlashcall: true, currentNumber: true, appHash: '' }),
-      }));
-      const loginToken = crypto.randomUUID();
-      PENDING.set(loginToken, {
-        client, phone: String(phone).trim(),
-        phoneCodeHash: sent.phoneCodeHash,
-        apiId: Number(apiId), apiHash: String(apiHash),
-        dcId: parseInt(dcId) || 0, state: 'code',
-      });
-      setTimeout(() => PENDING.delete(loginToken), 10 * 60 * 1000);
-      res.json({ ok: true, loginToken });
-    } catch (err) {
-      const sec = err.seconds || (err.errorMessage === 'FLOOD' ? 300 : 0);
-      if (sec > 0) return res.status(429).json({ error: `Telegram flood wait: ${Math.ceil(sec / 60)} min`, waitSeconds: sec });
-      res.status(400).json({ error: err.errorMessage || err.message });
-    }
-  });
-
-  app.post('/api/auth/verify', async (req, res) => {
-    const { loginToken, code, password } = req.body || {};
-    const st = PENDING.get(String(loginToken || ''));
-    if (!st) return res.status(404).json({ error: 'Login session expired — start again' });
-    try {
-      const { Api } = await import('telegram');
-      if (st.state === 'password') {
-        const pwd = await st.client.invoke(new Api.account.GetPassword());
-        const { computeCheck } = await import('telegram/Password.js');
-        await st.client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(pwd, String(password)) }));
-      } else {
-        await st.client.invoke(new Api.auth.SignIn({
-          phoneNumber: st.phone, phoneCodeHash: st.phoneCodeHash, phoneCode: String(code),
-        }));
-      }
-      const me = await st.client.getMe().catch(() => null);
-      const sessionStr = st.client.session.save();
-      await st.client.destroy().catch(() => {});
-
-      // Register the persistent scraper client under this account
-      const { tid } = await initScraper(sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: st.dcId });
-      saveSession(tid, { session: sessionStr, apiId: st.apiId, apiHash: st.apiHash, dc: st.dcId || 0, username: me?.username || '' });
-
-      // First real login claims any pre-multi-user data
-      const chs = loadUser(tid);
-      if (!Object.keys(chs).length) {
-        const legacy = loadUser('_legacy');
-        if (Object.keys(legacy).length) {
-          console.log(`[Auth] ${tid} claimed legacy workspace`);
-          saveUser(tid, legacy); deleteUser('_legacy');
-        }
-      }
-
-      PENDING.delete(loginToken);
-      logActivity('channel', `👤 @${me?.username || tid} logged in`);
-      // Remember-me: register this browser as a revocable device
-      let refresh = null;
-      if (req.body?.remember !== false) {
-        const deviceId = _registerDevice(tid);
-        refresh = signRefresh(tid, deviceId);
-      }
-      res.json({ ok: true, token: signToken(tid), refresh, tid, username: me?.username || '' });
-    } catch (err) {
-      if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
-        st.state = 'password';
-        return res.json({ ok: true, twoFactor: true });
-      }
-      if (err.errorMessage === 'PHONE_CODE_INVALID' || err.errorMessage === 'PHONE_CODE_EXPIRED') {
-        return res.status(400).json({ error: 'Invalid or expired code' });
-      }
-      if (err.errorMessage === 'PASSWORD_HASH_INVALID') return res.status(400).json({ error: 'Wrong 2FA password' });
-      res.status(500).json({ error: err.errorMessage || err.message });
-    }
-  });
+  // NOTE: MTProto login lives ONLY in the Telegram bot chat (/login) and the
+  // QR flow below — the web never asks for API credentials or OTP codes.
 
   // ── Auth middleware ────────────────────────────────────────────
   app.get('/api/auth/options', async (req, res) => {

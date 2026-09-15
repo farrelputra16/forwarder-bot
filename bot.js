@@ -1,8 +1,8 @@
 import { Telegraf } from 'telegraf';
 import { config } from './config.js';
-import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients, ensureAccessible, getAccessibleChannels } from './scraper.js';
+import { addChannelListener, resolveChain, fetchTokenInfo, formatTokenSummary, getStateExact, getBootOwnerTid, listClients, ensureAccessible, getAccessibleChannels, initScraper } from './scraper.js';
 import { updateTrackingPeriodicStatus, updateTrackingXStatus } from './tracking.js';
-import { loadUser, saveUser } from './store.js';
+import { loadUser, saveUser, saveSession, deleteUser } from './store.js';
 import { signLinkToken, publicBaseUrl } from './auth.js';
 
 // Workspace scope: the bot user's OWN account when it exists in the store
@@ -111,6 +111,7 @@ function menuKb(ctx) {
         [{ text: '➕ Add Channel', callback_data: 'add_channel' }],
         [{ text: '🌐 Open Dashboard (auto-login)', callback_data: 'open_web' }],
         [{ text: '📊 Dashboard', callback_data: 'dashboard' }],
+        [{ text: '🔑 Connect Account', callback_data: 'login_start' }],
         [{ text: '❓ Help', callback_data: 'help' }]
       ]
     }
@@ -203,7 +204,7 @@ bot.action('dashboard', async (ctx) => {
 
 bot.action('help', async (ctx) => {
   await ctx.editMessageText(
-    `❓ *Help & Commands*\n━━━━━━━━━━━━━━━━━━━━\n\n*/start* — Open main menu\n*/refresh \\<CA\\> [chain]* — Look up token info\n*/track \\<channel\\> \\<on|off\\>* — Toggle price tracking\n*/track\\_set \\<channel\\> \\<mults\\> \\<sec\\>* — Configure tracking\n\n💡 Use the buttons below to manage everything.\n━━━━━━━━━━━━━━━━━━━━`,
+    `❓ *Help & Commands*\n━━━━━━━━━━━━━━━━━━━━\n\n*/start* — Open main menu\n*/login* — Connect your Telegram account (OTP di chat ini)\n*/cancel* — Batalkan proses berjalan\n*/refresh \\<CA\\> [chain]* — Look up token info\n*/track \\<channel\\> \\<on|off\\>* — Toggle price tracking\n*/track\\_set \\<channel\\> \\<mults\\> \\<sec\\>* — Configure tracking\n\n💡 Use the buttons below to manage everything.\n━━━━━━━━━━━━━━━━━━━━`,
     {
       parse_mode: 'Markdown',
       reply_markup: {
@@ -213,6 +214,72 @@ bot.action('help', async (ctx) => {
       }
     }
   );
+});
+
+// ── Account Login (MTProto langsung di chat) ───────────────────────
+// Login = akun Telegram pengirim sendiri. Kode OTP dibaca dari aplikasi
+// Telegram resmi lalu diketik di sini — tanpa itu sesi tidak bisa dibuat.
+
+const loginPending = new Map(); // tgUserId -> { client, apiId, apiHash, phone, phoneCodeHash, state, timer }
+const LOGIN_TTL = 10 * 60 * 1000;
+
+function clearLogin(uid, destroy = true) {
+  const st = loginPending.get(String(uid));
+  if (!st) return;
+  loginPending.delete(String(uid));
+  if (st.timer) clearTimeout(st.timer);
+  if (destroy) st.client?.destroy?.().catch(() => {});
+}
+
+async function finalizeBotLogin(ctx, st) {
+  const uid = String(ctx.from.id);
+  const me = await st.client.getMe().catch(() => null);
+  // Keamanan isolasi: sesi yang disimpan HARUS milik pengirim chat ini.
+  if (!me || String(me.id) !== uid) {
+    try { await st.client.destroy().catch(() => {}); } catch {}
+    clearLogin(uid, false);
+    return ctx.reply('⚠️ Login harus memakai *akun Telegram yang sama* dengan chat ini. Mulai lagi dengan /login.', { parse_mode: 'Markdown' });
+  }
+  const sessionStr = st.client.session.save();
+  try { await st.client.destroy().catch(() => {}); } catch {}
+  clearLogin(uid, false);
+
+  const { tid } = await initScraper(sessionStr, { apiId: st.apiId, apiHash: st.apiHash, dcId: 0 });
+  saveSession(tid, { session: sessionStr, apiId: st.apiId, apiHash: st.apiHash, dc: 0, username: me?.username || '' });
+  if (!Object.keys(loadUser(tid)).length) {
+    const legacy = loadUser('_legacy');
+    if (Object.keys(legacy).length) { saveUser(tid, legacy); deleteUser('_legacy'); }
+  }
+  const chs = loadUser(tid);
+  let n = 0;
+  for (const src of Object.keys(chs)) {
+    try { await addChannelListener(src, tid); n++; } catch {}
+  }
+  await ctx.reply(
+    `✅ *Connected sebagai @${me?.username || tid}!*\n\nScraper akun ini aktif${n ? ` — ${n} channel dipasang listener` : ''}.\nBuka dashboard lewat tombol di bawah (auto-login, tanpa password).`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '🌐 Open Dashboard', callback_data: 'open_web' }], [{ text: '🏠 Menu', callback_data: 'menu' }]] },
+    }
+  );
+}
+
+async function startBotLogin(ctx, viaButton) {
+  const uid = String(ctx.from.id);
+  clearLogin(uid);
+  userState.set(ctx.from.id, { step: 'LOGIN_API_ID' });
+  const text =
+    `🔑 *Connect Account — 1/4*\n\nKirim *API ID* kamu (angka, dari my.telegram.org/apps).\n\nBatal kapan saja: /cancel`;
+  if (viaButton) await ctx.editMessageText(text, { parse_mode: 'Markdown' });
+  else await ctx.reply(text, { parse_mode: 'Markdown' });
+}
+
+bot.action('login_start', (ctx) => startBotLogin(ctx, true));
+bot.command('login', (ctx) => startBotLogin(ctx, false));
+bot.command('cancel', (ctx) => {
+  clearLogin(ctx.from.id);
+  userState.delete(ctx.from.id);
+  ctx.reply('🚫 Dibatalkan.');
 });
 
 // ── Channel List (paginated) ─────────────────────────────────────
@@ -691,6 +758,106 @@ function shortTitle(t, n = 26) {
 bot.on('text', async (ctx) => {
   const s = userState.get(ctx.from.id);
   if (!s) return;
+
+  // ── Login wizard steps (didahulukan) ──
+  if (s.step === 'LOGIN_API_ID') {
+    const apiId = parseInt((ctx.message.text || '').trim());
+    if (!apiId) return ctx.reply('⚠️ API ID harus angka. Coba lagi, atau /cancel untuk batal.');
+    s.apiId = apiId;
+    s.step = 'LOGIN_API_HASH';
+    await ctx.reply('🔑 *Connect Account — 2/4*\n\nKirim *API Hash* kamu.\n\n_(Pesan ini akan saya hapus otomatis setelah dibaca.)_', { parse_mode: 'Markdown' });
+    return;
+  }
+  if (s.step === 'LOGIN_API_HASH') {
+    const apiHash = (ctx.message.text || '').trim();
+    if (apiHash.length < 8) return ctx.reply('⚠️ API Hash tidak valid. Coba lagi, atau /cancel untuk batal.');
+    s.apiHash = apiHash;
+    try { await ctx.deleteMessage().catch(() => {}); } catch {}
+    s.step = 'LOGIN_PHONE';
+    await ctx.reply('🔑 *Connect Account — 3/4*\n\nKirim *nomor HP* akun Telegram ini (format internasional, cth. `+62812…`).', { parse_mode: 'Markdown' });
+    return;
+  }
+  if (s.step === 'LOGIN_PHONE') {
+    const phone = (ctx.message.text || '').replace(/[\s-]/g, '');
+    if (!/^\+?\d{7,15}$/.test(phone)) return ctx.reply('⚠️ Nomor tidak valid. Contoh: `+62812…`', { parse_mode: 'Markdown' });
+    s.phone = phone;
+    await ctx.reply('⏳ Mengirim kode OTP ke Telegram kamu…');
+    try {
+      const { Api } = await import('telegram');
+      const { StringSession } = await import('telegram/sessions/index.js');
+      const { TelegramClient } = await import('telegram');
+      const client = new TelegramClient(new StringSession(''), Number(s.apiId), String(s.apiHash), { connectionRetries: 3 });
+      await client.connect();
+      const sent = await client.invoke(new Api.auth.SendCode({
+        phoneNumber: s.phone,
+        apiId: Number(s.apiId),
+        apiHash: String(s.apiHash),
+        settings: new Api.CodeSettings({ allowFlashcall: true, currentNumber: true, appHash: '' }),
+      }));
+      const uid = String(ctx.from.id);
+      clearLogin(uid);
+      const timer = setTimeout(() => clearLogin(uid), LOGIN_TTL);
+      loginPending.set(uid, { client, apiId: Number(s.apiId), apiHash: String(s.apiHash), phone: s.phone, phoneCodeHash: sent.phoneCodeHash, timer });
+      s.step = 'LOGIN_CODE';
+      await ctx.reply('🔑 *Connect Account — 4/4*\n\nKetik *kode OTP* yang masuk di aplikasi Telegram.\n\n_(Pesan kode akan saya hapus otomatis.)_', { parse_mode: 'Markdown' });
+    } catch (err) {
+      const sec = err.seconds || (err.errorMessage === 'FLOOD' ? 300 : 0);
+      userState.delete(ctx.from.id);
+      if (sec > 0) return ctx.reply(`⏳ Telegram flood wait: tunggu ~${Math.ceil(sec / 60)} menit lalu /login lagi. Jangan spam minta kode.`);
+      return ctx.reply(`⚠️ Gagal: ${err.errorMessage || err.message}\n\nPeriksa API ID/Hash/nomor, lalu /login lagi.`);
+    }
+    return;
+  }
+  if (s.step === 'LOGIN_CODE') {
+    const code = (ctx.message.text || '').trim();
+    if (!code) return;
+    const st = loginPending.get(String(ctx.from.id));
+    if (!st) { userState.delete(ctx.from.id); return ctx.reply('⚠️ Sesi login kedaluwarsa — /login lagi.'); }
+    try { await ctx.deleteMessage().catch(() => {}); } catch {}
+    try {
+      const { Api } = await import('telegram');
+      await st.client.invoke(new Api.auth.SignIn({
+        phoneNumber: st.phone, phoneCodeHash: st.phoneCodeHash, phoneCode: String(code),
+      }));
+      userState.delete(ctx.from.id);
+      await finalizeBotLogin(ctx, st);
+    } catch (err) {
+      if (err.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+        s.step = 'LOGIN_PASSWORD';
+        return ctx.reply('🔐 Akun ini memakai *2FA*. Kirim *cloud password* kamu.\n\n_(Akan saya hapus otomatis.)_', { parse_mode: 'Markdown' });
+      }
+      if (err.errorMessage === 'PHONE_CODE_INVALID' || err.errorMessage === 'PHONE_CODE_EXPIRED') {
+        return ctx.reply('⚠️ Kode salah/kedaluwarsa. Ketik ulang kode yang benar, atau /cancel untuk batal.');
+      }
+      userState.delete(ctx.from.id);
+      clearLogin(ctx.from.id);
+      return ctx.reply(`⚠️ Gagal: ${err.errorMessage || err.message}`);
+    }
+    return;
+  }
+  if (s.step === 'LOGIN_PASSWORD') {
+    const password = ctx.message.text || '';
+    if (!password) return;
+    const st = loginPending.get(String(ctx.from.id));
+    if (!st) { userState.delete(ctx.from.id); return ctx.reply('⚠️ Sesi login kedaluwarsa — /login lagi.'); }
+    try { await ctx.deleteMessage().catch(() => {}); } catch {}
+    try {
+      const { Api } = await import('telegram');
+      const pwd = await st.client.invoke(new Api.account.GetPassword());
+      const { computeCheck } = await import('telegram/Password.js');
+      await st.client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(pwd, String(password)) }));
+      userState.delete(ctx.from.id);
+      await finalizeBotLogin(ctx, st);
+    } catch (err) {
+      if (err.errorMessage === 'PASSWORD_HASH_INVALID') {
+        return ctx.reply('⚠️ Password salah. Coba lagi, atau /cancel untuk batal.');
+      }
+      userState.delete(ctx.from.id);
+      clearLogin(ctx.from.id);
+      return ctx.reply(`⚠️ Gagal: ${err.errorMessage || err.message}`);
+    }
+    return;
+  }
 
   if (s.step === 'LINK') {
     const raw = (ctx.message.text || '').trim();

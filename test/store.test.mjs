@@ -167,6 +167,21 @@ test('web: auth required + users only ever see their own channels', async () => 
       body: JSON.stringify({ loginToken: 'nope', password: 'x' }),
     });
     assert.equal(r.status, 404);
+
+    // Manual web OTP login is gone — web is Telegram-mediated only.
+    // (Removed routes fall through to the auth middleware → 401.)
+    r = await fetch(base + '/api/auth/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiId: 1, apiHash: 'x', phone: '+1' }),
+    });
+    assert.equal(r.status, 401);
+    r = await fetch(base + '/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginToken: 'x', code: '1' }),
+    });
+    assert.equal(r.status, 401);
   } finally {
     server.close();
   }
@@ -174,6 +189,13 @@ test('web: auth required + users only ever see their own channels', async () => 
 
 after(() => {
   rmSync(TMP, { recursive: true, force: true });
+});
+
+test('bot: module loads without launching (login wizard wired)', async () => {
+  const b = await import('../bot.js');
+  assert.ok(b.bot, 'telegraf instance exported');
+  assert.equal(typeof b.getBotUsername, 'function');
+  assert.equal(typeof b.isBotActive, 'function');
 });
 
 test('auth: Telegram Login Widget signature verifies (valid / forged / stale)', async () => {
