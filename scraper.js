@@ -169,7 +169,7 @@ async function _searchExact(ca) {
   };
 }
 
-// Direct lookup per mint — sering berhasil walau search belum meng-index.
+// Direct per-mint lookup — often succeeds even when search hasn't indexed yet.
 async function _directLookup(ca) {
   const chains = /^0x[a-fA-F0-9]{40}$/.test(ca) ? ['eth', 'bsc', 'base'] : ['solana'];
   const results = await Promise.all(chains.map(async (ch) => {
@@ -189,13 +189,13 @@ async function _fetchDexScreener(ca, attempt = 0) {
     const s = await _searchExact(ca);
     let pair = s.hit;
     if (!pair) {
-      if (s.count > 0) console.warn(`[DexScreener] ${ca.slice(0, 8)}… search ada ${s.count} pair tapi tak ada yang cocok persis — coba direct lookup`);
-      else console.warn(`[DexScreener] ${ca.slice(0, 8)}… search kosong — coba direct lookup`);
+      if (s.count > 0) console.warn(`[DexScreener] ${ca.slice(0, 8)}… search found ${s.count} pair(s) but none match exactly — trying direct lookup`);
+      else console.warn(`[DexScreener] ${ca.slice(0, 8)}… search empty — trying direct lookup`);
       pair = await _directLookup(ca);
-      if (pair) console.log(`[DexScreener] ${ca.slice(0, 8)}… ketemu via direct lookup ✅`);
+      if (pair) console.log(`[DexScreener] ${ca.slice(0, 8)}… found via direct lookup ✅`);
     }
     if (!pair) {
-      console.warn(`[DexScreener] ${ca.slice(0, 8)}… belum ter-index (token terlalu baru / CA salah)`);
+      console.warn(`[DexScreener] ${ca.slice(0, 8)}… not indexed yet (token too new / wrong CA)`);
       return null;
     }
     return {
@@ -227,10 +227,10 @@ async function _fetchDexScreener(ca, attempt = 0) {
   }
 }
 
-// ── Fallback: Jupiter price + on-chain mint (saat DexScreener kosong) ──
-// Token baru / belum ada pool tidak ada di Dex — tapi Jupiter sering sudah
-// punya harga & likuiditas, dan mint selalu bisa dibaca on-chain (supply,
-// nama, otoritas). Gabungan keduanya = kartu lengkap tanpa Dex.
+// ── Fallback: Jupiter price + on-chain mint (when DexScreener is empty) ──
+// New tokens / no pool yet have nothing on Dex — but Jupiter often already
+// has price & liquidity, and the mint is always readable on-chain (supply,
+// name, authorities). Combined = full card without Dex.
 
 const JUP_PRICE_URL = 'https://lite-api.jup.ag/price/v3?ids=';
 const SOL_RPC_URL = 'https://api.mainnet-beta.solana.com';
@@ -268,7 +268,7 @@ export async function fetchOnchainMint(ca) {
     if (!res.ok) return null;
     const v = (await res.json())?.result?.value;
     const info = v?.data?.parsed?.info;
-    if (!info) return null; // mint tidak ada di chain
+    if (!info) return null; // mint does not exist on-chain
     const decimals = parseInt(info.decimals) || 0;
     const supply = parseFloat(info.supply) / Math.pow(10, decimals);
     let name = '', symbol = '';
@@ -316,8 +316,8 @@ export async function fetchFallbackMarketData(ca) {
   };
 }
 
-// Balapan sumber data: yang pertama ada harganya menang (untuk baseline).
-// Semua promise tetap di-handle agar tidak ada unhandled rejection.
+// Data-source race: first one with a price wins (for the baseline).
+// All promises stay handled so there are no unhandled rejections.
 export function firstGood(promises) {
   return new Promise((resolve) => {
     let pending = promises.length;
@@ -332,15 +332,15 @@ export function firstGood(promises) {
   });
 }
 
-// Token yang baru lahir sering belum ter-index saat CA masuk —
-// tunggu & coba lagi bertahap (±60 dtk) sebelum menyerah.
+// Newborn tokens are often not indexed yet when the CA arrives —
+// wait & retry gradually (±60s) before giving up.
 export async function waitForDexData(ca, delays = [10_000, 20_000, 30_000]) {
   for (const wait of delays) {
     await new Promise(r => setTimeout(r, wait));
     try {
       const d = await fetchDexScreenerInfo(ca);
       if (d && parseFloat(d.price) > 0) {
-        console.log(`[DexScreener] ${ca.slice(0, 8)}… data menyusul ✅`);
+        console.log(`[DexScreener] ${ca.slice(0, 8)}… late data arrived ✅`);
         return d;
       }
     } catch {}

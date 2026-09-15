@@ -15,14 +15,14 @@ const LOCK_FILE = './bot.lock';
     if (pid) {
       try {
         process.kill(pid, 0);
-        console.error(`\n❌ Bot sudah berjalan (PID ${pid}). Hentikan dulu (Ctrl+C di terminal itu) lalu start lagi.\n   Menjalankan 2x dengan session yang sama = koneksi saling tendang = offline terus.\n`);
+        console.error(`\n❌ Bot is already running (PID ${pid}). Stop it first (Ctrl+C in that terminal), then start again.\n   Running 2x with the same session = connections kicking each other = constant offline.\n`);
         process.exit(1);
       } catch (e) {
         if (e.code !== 'ESRCH') {
           console.error(`\n❌ Ada proses lain memakai lock (PID ${pid}).\n`);
           process.exit(1);
         }
-        // ESRCH = PID mati → lock basi, ambil alih
+        // ESRCH = PID dead → stale lock, take over
       }
     }
   } catch {}
@@ -37,8 +37,8 @@ const LOCK_FILE = './bot.lock';
 // sessions.json is the source of truth. A fresh deployment seeds it from
 // the legacy env TELEGRAM_SESSION so old setups keep working untouched.
 
-// Session yang dicabut server (logout dari HP / terminate all sessions) tidak
-// akan pernah bisa dipakai lagi — buang otomatis agar tidak di-retry tiap boot.
+// Sessions revoked server-side (logout from phone / terminate all sessions)
+// can never be used again — drop automatically so boot doesn't retry them.
 const DEAD_SESSION = /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|AUTH_KEY_DUPLICATED|SESSION_EXPIRED/i;
 function clearEnvSession() {
   try {
@@ -69,7 +69,7 @@ async function bootAccounts() {
       const msg = e.errorMessage || e.message || '';
       console.warn('[Boot] Env session failed:', msg);
       if (DEAD_SESSION.test(msg)) {
-        console.warn('[Boot] Session .env sudah mati di server — dibersihkan. Login ulang via: npm run login');
+        console.warn('[Boot] .env session is dead server-side — cleaned up. Re-login via: npm run login');
         clearEnvSession();
       }
     }
@@ -86,7 +86,7 @@ async function bootAccounts() {
       console.warn(`[Boot] Session ${tid} failed: ${msg}`);
       if (DEAD_SESSION.test(msg)) {
         deleteSession(tid);
-        console.warn(`[Boot] Session ${tid} yang mati dihapus dari sessions.json — login ulang via: npm run login`);
+        console.warn(`[Boot] Dead session ${tid} removed from sessions.json — re-login via: npm run login`);
       }
     }
   }
@@ -99,16 +99,16 @@ initTrackings();
 startWebServer();
 startKeepAlive();
 
-// Banner jelas bila tidak ada akun yang terhubung (jalur lokal).
+// Clear banner when no account is connected (local path).
 try {
   const up = listClients().filter(s => { try { return s.client && s.client.connected; } catch { return false; } });
   if (!up.length) {
-    console.log('\n⚠️  TIDAK ADA AKUN TELEGRAM YANG TERHUBUNG');
-    console.log('   Scraper MATI — bot & web hanya bisa atur setting, tidak bisa forward.');
-    console.log('   Perbaiki dengan:  npm run login');
-    console.log('   (masukkan kode OTP dari aplikasi Telegram)\n');
+    console.log('\n⚠️  NO TELEGRAM ACCOUNT CONNECTED');
+    console.log('   Scraper is DOWN — bot & web can only change settings, no forwarding.');
+    console.log('   Fix it with:  npm run login');
+    console.log('   (enter the OTP code from the Telegram app)\n');
   } else {
-    console.log(`[Boot] Akun aktif: ${up.map(s => '@' + (s.username || s.tid)).join(', ')}`);
+    console.log(`[Boot] Active accounts: ${up.map(s => '@' + (s.username || s.tid)).join(', ')}`);
   }
 } catch {}
 
@@ -118,7 +118,7 @@ const sendAll = async (targets, text, parseMode, tid) => {
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.error(`[Forward] (${tid}) → ${targets[i]} failed: ${r.reason?.message || r.reason}`);
-      logActivity('error', `⚠️ Gagal kirim ke ${targets[i]}: ${r.reason?.message || r.reason}`);
+      logActivity('error', `⚠️ Failed to send to ${targets[i]}: ${r.reason?.message || r.reason}`);
     }
   });
 };
@@ -152,7 +152,7 @@ onMessage(async (ownerTid, sourceChannel, message) => {
       if (isDup) continue;
 
       const msg1 = `NEW CALL\n<code>${ca}</code>`;
-      // Semua sumber ditembak PARALEL sejak detik-0 (bersamaan kirim msg1):
+      // All sources fire IN PARALLEL from second-0 (together with msg1):
       // Dex (kaya data) dan Jupiter+on-chain (biasanya lebih cepat).
       const dexP = fetchDexScreenerInfo(ca);
       const fastP = fetchFallbackMarketData(ca);
@@ -182,8 +182,8 @@ onMessage(async (ownerTid, sourceChannel, message) => {
       };
       registerTracking(await firstGood([dexP, fastP]));
 
-      // Kartu: Dex diutamakan (paling kaya), lalu fallback, lalu tunggu.
-      // Kalau baseline tadi gagal total, enrichment jadi kesempatan terakhir.
+      // Card: Dex first (richest), then fallback, then wait.
+      // If the baseline failed entirely, enrichment is the last chance.
       let dexInfo = null;
       try { dexInfo = await dexP; } catch {}
       if (!(dexInfo && parseFloat(dexInfo.price) > 0)) {
@@ -227,7 +227,7 @@ onMessage(async (ownerTid, sourceChannel, message) => {
   if (!tids.length) {
     console.log('[Boot] No channels configured yet — add some from the bot.');
   } else if (listClients().length === 0) {
-    console.log(`[Boot] ${tids.length} akun punya channel tapi tidak ada client — listener dilewati (login dulu untuk mengaktifkan).`);
+    console.log(`[Boot] ${tids.length} account(s) have channels but no client — listeners skipped (login first to activate).`);
   } else {
     for (const tid of tids) {
       const chs = loadUser(tid);

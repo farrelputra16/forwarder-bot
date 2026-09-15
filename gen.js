@@ -1,5 +1,5 @@
-// npm run login — login Telegram lokal (API ID/Hash + OTP), session otomatis
-// disimpan ke sessions.json dan TELEGRAM_SESSION di .env diperbarui.
+// npm run login — local Telegram login (API ID/Hash + OTP); session auto-
+// saved to sessions.json and TELEGRAM_SESSION in .env gets updated.
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import readline from 'readline';
@@ -13,25 +13,25 @@ const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
 
 let apiId = parseInt(process.env.TELEGRAM_API_ID);
 if (!apiId || isNaN(apiId)) {
-  apiId = parseInt(await ask('API ID (dari my.telegram.org): '));
+  apiId = parseInt(await ask('API ID (from my.telegram.org): '));
 }
 let apiHash = (process.env.TELEGRAM_API_HASH || '').trim();
 if (!apiHash) {
   apiHash = (await ask('API Hash: ')).trim();
 }
 if (!apiId || !apiHash) {
-  console.log('❌ API ID / Hash wajib diisi. Ambil di https://my.telegram.org/apps');
+  console.log('❌ API ID / Hash are required. Get them at https://my.telegram.org/apps');
   process.exit(1);
 }
 
-console.log('\nMenghubungkan ke Telegram…');
-console.log('(kode OTP hanya diminta SEKALI — sesudah ini tersimpan permanen)\n');
+console.log('\nConnecting to Telegram…');
+console.log('(OTP code is asked only ONCE — it is stored permanently after this)\n');
 const client = new TelegramClient(new StringSession(''), apiId, apiHash, { connectionRetries: 5 });
 try {
   await client.start({
-    phoneNumber: async () => (await ask('Nomor HP (+62…): ')).trim(),
-    phoneCode: async () => (await ask('Kode OTP (cek aplikasi Telegram): ')).trim(),
-    password: async () => await ask('Password 2FA (Enter bila tidak ada): '),
+    phoneNumber: async () => (await ask('Phone number (+62…): ')).trim(),
+    phoneCode: async () => (await ask('OTP code (check the Telegram app): ')).trim(),
+    password: async () => await ask('2FA password (Enter if none): '),
     onError: (err) => console.log('[login]', err.message || err),
   });
 } catch (e) {
@@ -39,11 +39,11 @@ try {
   const secs = e.seconds || (/FLOOD_WAIT_(\d+)/.exec(msg)?.[1] * 1) || 0;
   if (/FLOOD/i.test(msg) || secs > 0) {
     const mins = Math.max(1, Math.ceil((secs || 300) / 60));
-    console.log(`\n⏳ Telegram membatasi permintaan kode (anti-spam).`);
-    console.log(`   Tunggu ±${mins} menit TANPA minta kode lagi, lalu ulangi: npm run login`);
-    console.log('   (Setiap permintaan baru me-reset timer — jadi jangan spam.)');
+    console.log(`\n⏳ Telegram is rate-limiting code requests (anti-spam).`);
+    console.log(`   Wait ±${mins} min WITHOUT requesting another code, then retry: npm run login`);
+    console.log('   (Every new request resets the timer — so do not spam.)');
   } else {
-    console.log('❌ Login gagal:', msg);
+    console.log('❌ Login failed:', msg);
   }
   process.exit(1);
 }
@@ -51,14 +51,14 @@ try {
 const session = client.session.save();
 const me = await client.getMe();
 const tid = String(me.id);
-console.log(`\n✅ Login sebagai @${me.username || tid} (${tid})`);
+console.log(`\n✅ Logged in as @${me.username || tid} (${tid})`);
 
-// 1) simpan ke sessions.json (sumber utama multi-user)
+// 1) save to sessions.json (primary multi-user source)
 const { saveSession } = await import('./store.js');
 saveSession(tid, { session, apiId, apiHash, dc: 0, username: me.username || '' });
-console.log('✅ Session tersimpan di sessions.json');
+console.log('✅ Session saved to sessions.json');
 
-// 2) sinkronkan .env agar konsisten
+// 2) sync .env to stay consistent
 try {
   let env = fs.existsSync('.env') ? fs.readFileSync('.env', 'utf8') : '';
   const set = (k, v) => {
@@ -70,12 +70,12 @@ try {
   set('TELEGRAM_API_HASH', apiHash);
   set('TELEGRAM_SESSION', session);
   fs.writeFileSync('.env', env);
-  console.log('✅ .env diperbarui (TELEGRAM_SESSION baru)');
+  console.log('✅ .env updated (new TELEGRAM_SESSION)');
 } catch (e) {
-  console.log('⚠️ Gagal update .env:', e.message);
+  console.log('⚠️ Failed to update .env:', e.message);
 }
 
 await client.destroy().catch(() => {});
 rl.close();
-console.log('\nSelesai. Jalankan: npm start');
+console.log('\nDone. Run: npm start');
 process.exit(0);

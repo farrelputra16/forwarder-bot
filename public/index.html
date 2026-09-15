@@ -224,10 +224,10 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
     <div id="qr-box" style="background:#fff;border-radius:14px;padding:10px;line-height:0;min-width:220px;min-height:220px;display:flex;align-items:center;justify-content:center">
       <span class="hint">Loading QR…</span>
     </div>
-    <p class="hint" style="font-size:.64rem;text-align:center" id="qr-hint">📷 Scan dengan aplikasi Telegram<br>(Pengaturan → Perangkat → Tautkan Perangkat)</p>
+    <p class="hint" style="font-size:.64rem;text-align:center" id="qr-hint">📷 Scan with the Telegram app<br>(Settings → Devices → Link Device)</p>
     <div id="qr-pass-wrap" style="display:none;flex-direction:column;gap:.4rem;width:100%">
       <input id="qr-pass" type="password" placeholder="Password 2FA" style="text-align:center" onkeydown="if(event.key==='Enter')qrSendPassword()">
-      <button class="btn btn-p btn-sm" onclick="qrSendPassword()">Kirim</button>
+      <button class="btn btn-p btn-sm" onclick="qrSendPassword()">Send</button>
     </div>
     <button class="btn btn-g btn-sm" onclick="qrStart(true)">↻ QR baru</button>
   </div>
@@ -235,18 +235,18 @@ main{max-width:1180px;margin:0 auto;padding:1.5rem}
   <!-- 1-click Telegram login widget (needs bot domain on hosting) -->
   <div id="tg-widget-wrap" style="display:flex;flex-direction:column;align-items:center;gap:.35rem;margin-top:.7rem">
     <div id="tg-widget"></div>
-    <p class="hint" style="font-size:.62rem">atau 1 klik via Telegram</p>
+    <p class="hint" style="font-size:.62rem">or 1 click via Telegram</p>
   </div>
 
   <!-- Paste code from the bot (works everywhere incl. localhost) -->
   <div style="display:flex;gap:.4rem;width:300px;max-width:86vw;margin-top:.4rem">
-    <input id="bot-code" class="link-in" placeholder="Tempel kode dari bot…" style="text-align:center">
+    <input id="bot-code" class="link-in" placeholder="Paste code from the bot…" style="text-align:center">
     <button class="btn btn-g btn-sm" onclick="exchangeBotCode()">OK</button>
   </div>
 
-  <!-- Buka bot untuk login / connect account (tanpa ketik kredensial di web) -->
-  <button class="btn btn-g" id="lg-open-bot" style="display:none;width:300px;max-width:86vw" onclick="window.open(lgBotUrl,'_blank')">✈️ Buka Bot untuk Login</button>
-  <p class="hint" style="font-size:.62rem;text-align:center;max-width:300px">Login &amp; connect account cukup <b>di chat bot</b> — web otomatis ikut masuk.</p>
+  <!-- Open the bot to log in / connect account (no typing credentials on web) -->
+  <button class="btn btn-g" id="lg-open-bot" style="display:none;width:300px;max-width:86vw" onclick="window.open(lgBotUrl,'_blank')">✈️ Open Bot to Log In</button>
+  <p class="hint" style="font-size:.62rem;text-align:center;max-width:300px">Log in &amp; connect your account right <b>in the bot chat</b> — the web follows automatically.</p>
 
   <p id="lock-err" class="hint" style="color:var(--red);display:none;text-align:center"></p>
 </div>
@@ -309,7 +309,7 @@ const esc=s=>s?String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 const av=t=>(t||'?').trim().charAt(0).toUpperCase()||'?';
 const ago=ts=>{const s=Math.floor((Date.now()-ts)/1000);if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h'};
 
-// ── Auth gate: web login HANYA lewat Telegram (widget / QR / kode bot) ──
+// ── Auth gate: web login ONLY via Telegram (widget / QR / bot code) ──
 function lgErr(m){const e=$('#lock-err');if(!m){e.style.display='none';return}e.textContent=m;e.style.display='block'}
 function saveTokens(d){
   TOKEN=d.token;localStorage.setItem('fw_token',d.token);
@@ -353,7 +353,7 @@ async function showLock(){
       s.setAttribute('data-request-access','write');
       wrap.appendChild(s);
     } else if(!o.botUsername&&wrap){
-      wrap.innerHTML='<p class="hint">Bot offline — scan QR di atas atau buka bot lalu tempel kodenya di bawah.</p>';
+      wrap.innerHTML='<p class="hint">Bot offline — scan the QR above or open the bot and paste its code below.</p>';
     }
   }catch{}
   // kick off QR login (primary, no typing needed)
@@ -365,7 +365,7 @@ window.qrStart=async function(force){
   clearInterval(QR_TIMER);QR_TOKEN=null;
   $('#qr-pass-wrap').style.display='none';
   $('#qr-box').innerHTML='<span class="hint">Loading QR…</span>';
-  $('#qr-hint').innerHTML='📷 Scan dengan aplikasi Telegram<br>(Pengaturan → Perangkat → Tautkan Perangkat)';
+  $('#qr-hint').innerHTML='📷 Scan with the Telegram app<br>(Settings → Devices → Link Device)';
   lgErr('');
   try{
     const d=await fetch('/api/auth/qr/start',{method:'POST'}).then(async r=>{
@@ -388,7 +388,7 @@ async function qrPoll(){
     if(d.qr)$('#qr-box').innerHTML=`<img src="${d.qr}" style="width:200px;height:200px" alt="QR login">`;
     if(d.status==='password'){
       $('#qr-pass-wrap').style.display='flex';
-      $('#qr-hint').textContent='☁️ Akun memakai 2FA — masukkan password lalu Kirim';
+      $('#qr-hint').textContent='☁️ Account uses 2FA — enter the password then Send';
     }
     if(d.status==='done'){
       clearInterval(QR_TIMER);QR_TOKEN=null;
@@ -413,7 +413,7 @@ window.qrSendPassword=async function(){
 // Paste a login code minted by the bot (bot → 🌐 Open Dashboard on localhost)
 window.exchangeBotCode=async function(){
   const code=($('#bot-code').value||'').trim();
-  if(!code)return toast('Tempel kode dari bot dulu','err');
+  if(!code)return toast('Paste the bot code first','err');
   try{
     const d=await fetch('/api/auth/exchange',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:code})}).then(async r=>{
       const j=await r.json().catch(()=>({}));
@@ -439,7 +439,7 @@ window.onTelegramAuth=async function(user){
     $('#lock').classList.remove('open');
     toast(`👋 Welcome @${d.username||d.tid}`,'ok');
     bootAfterAuth();
-  }catch(e){lgErr(e.message+' — coba scan QR di atas atau login via bot.')}
+  }catch(e){lgErr(e.message+' — try scanning the QR above or logging in via the bot.')}
 };
 async function bootAfterAuth(){
   try{clearInterval(QR_TIMER);QR_TOKEN=null}catch{}
