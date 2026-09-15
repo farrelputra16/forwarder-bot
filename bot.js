@@ -266,17 +266,10 @@ async function finalizeBotLogin(ctx, st) {
 
 async function startBotLogin(ctx, viaButton) {
   const uid = String(ctx.from.id);
-  // App credentials come from the server — the user only proves their phone number.
-  if (!config.telegram.apiId || !config.telegram.apiHash) {
-    const msg = '⚠️ Server is missing API ID/Hash (TELEGRAM_API_ID/HASH empty in .env). Ask the operator to fill them in first.';
-    if (viaButton) await ctx.editMessageText(msg);
-    else await ctx.reply(msg);
-    return;
-  }
   clearLogin(uid);
-  userState.set(ctx.from.id, { step: 'LOGIN_PHONE' });
+  userState.set(ctx.from.id, { step: 'LOGIN_API_ID' });
   const text =
-    `🔑 *Connect Account — 1/2*\n\nSend your Telegram account's *phone number* (international format, e.g. \`+62812…\`).\n\nThe OTP code goes to your Telegram app, then type it here.\n\nCancel anytime: /cancel`;
+    `🔑 *Connect Account — 1/4*\n\nSend your *API ID* (number, from my.telegram.org/apps).\n\nEach user logs in with their *own* credentials — nothing shared.\n\nCancel anytime: /cancel`;
   if (viaButton) await ctx.editMessageText(text, { parse_mode: 'Markdown' });
   else await ctx.reply(text, { parse_mode: 'Markdown' });
 }
@@ -767,7 +760,24 @@ bot.on('text', async (ctx) => {
   if (!s) return;
 
   // ── Login wizard steps (didahulukan) ──
-  // API ID/Hash selalu milik server (config.telegram) — user cukup nomor + OTP.
+  // Each user brings their OWN API ID/Hash — the server never needs yours.
+  if (s.step === 'LOGIN_API_ID') {
+    const apiId = parseInt((ctx.message.text || '').trim());
+    if (!apiId) return ctx.reply('⚠️ API ID must be a number. Try again, or /cancel to abort.');
+    s.apiId = apiId;
+    s.step = 'LOGIN_API_HASH';
+    await ctx.reply('🔑 *Connect Account — 2/4*\n\nSend your *API Hash*.\n\n_(This message auto-deletes after reading.)_', { parse_mode: 'Markdown' });
+    return;
+  }
+  if (s.step === 'LOGIN_API_HASH') {
+    const apiHash = (ctx.message.text || '').trim();
+    if (apiHash.length < 8) return ctx.reply('⚠️ Invalid API Hash. Try again, or /cancel to abort.');
+    s.apiHash = apiHash;
+    try { await ctx.deleteMessage().catch(() => {}); } catch {}
+    s.step = 'LOGIN_PHONE';
+    await ctx.reply('🔑 *Connect Account — 3/4*\n\nSend this Telegram account\'s *phone number* (international format, e.g. `+62812…`).', { parse_mode: 'Markdown' });
+    return;
+  }
   if (s.step === 'LOGIN_PHONE') {
     const phone = (ctx.message.text || '').replace(/[\s-]/g, '');
     if (!/^\+?\d{7,15}$/.test(phone)) return ctx.reply('⚠️ Invalid number. Example: `+62812…`', { parse_mode: 'Markdown' });
@@ -777,25 +787,25 @@ bot.on('text', async (ctx) => {
       const { Api } = await import('telegram');
       const { StringSession } = await import('telegram/sessions/index.js');
       const { TelegramClient } = await import('telegram');
-      const client = new TelegramClient(new StringSession(''), Number(config.telegram.apiId), String(config.telegram.apiHash), { connectionRetries: 3 });
+      const client = new TelegramClient(new StringSession(''), Number(s.apiId), String(s.apiHash), { connectionRetries: 3 });
       await client.connect();
       const sent = await client.invoke(new Api.auth.SendCode({
         phoneNumber: s.phone,
-        apiId: Number(config.telegram.apiId),
-        apiHash: String(config.telegram.apiHash),
+        apiId: Number(s.apiId),
+        apiHash: String(s.apiHash),
         settings: new Api.CodeSettings({ allowFlashcall: true, currentNumber: true, appHash: '' }),
       }));
       const uid = String(ctx.from.id);
       clearLogin(uid);
       const timer = setTimeout(() => clearLogin(uid), LOGIN_TTL);
-      loginPending.set(uid, { client, apiId: Number(config.telegram.apiId), apiHash: String(config.telegram.apiHash), phone: s.phone, phoneCodeHash: sent.phoneCodeHash, timer });
+      loginPending.set(uid, { client, apiId: Number(s.apiId), apiHash: String(s.apiHash), phone: s.phone, phoneCodeHash: sent.phoneCodeHash, timer });
       s.step = 'LOGIN_CODE';
-      await ctx.reply('🔑 *Connect Account — 2/2*\n\nType the *OTP code* from your Telegram app.\n\n_(The code message auto-deletes.)_', { parse_mode: 'Markdown' });
+      await ctx.reply('🔑 *Connect Account — 4/4*\n\nType the *OTP code* from your Telegram app.\n\n_(The code message auto-deletes.)_', { parse_mode: 'Markdown' });
     } catch (err) {
       const sec = err.seconds || (err.errorMessage === 'FLOOD' ? 300 : 0);
       userState.delete(ctx.from.id);
       if (sec > 0) return ctx.reply(`⏳ Telegram flood wait: wait ~${Math.ceil(sec / 60)} min then /login again. Don't spam code requests.`);
-      return ctx.reply(`⚠️ Failed: ${err.errorMessage || err.message}\n\nCheck the number, then /login again.`);
+      return ctx.reply(`⚠️ Failed: ${err.errorMessage || err.message}\n\nCheck the API ID/Hash/number, then /login again.`);
     }
     return;
   }
